@@ -1,9 +1,8 @@
 # CPAgent
-
 **A local-first, SOC2-aligned personal tax filing dashboard for self-employed Schedule C filers.**
 
-CPAgent ingests raw financial records (bank statements, credit card statements, P&L exports, W-2s, 1099s), reconciles them through a learning categorization engine, surfaces actionable findings with delta tracking, computes federal + state tax estimates, and generates populated IRS and state filing / extension PDFs — all from your own laptop, with encryption at rest and a PII scrubber on any outbound API call.
-
+Ingests raw financial records (bank statements, credit card statements, P&L exports, W-2s, 1099s), reconciles them through a learning categorization engine, surfaces actionable findings with delta tracking, computes federal + state tax estimates, and generates populated IRS and state filing / extension PDFs — all from your own laptop, with encryption at rest and a PII scrubber on any outbound API call.
+<img width="1536" height="1024" alt="fake-data" src="https://github.com/user-attachments/assets/33b642cc-ac13-4814-9f88-730ca3f2b5ad" />
 > ## ⚠️ DISCLAIMER — USE AT YOUR OWN RISK
 > CPAgent is provided "as is", without warranty of any kind, express or implied. The authors and contributors **make no promises** that this software produces correct or complete results for your particular tax situation, and shall not be liable for any claim, damages, or other liability arising from the use of this software. **This tool is not tax advice** and is not a substitute for a licensed tax professional. Always verify all figures, forms, and filings with a qualified CPA or tax attorney before submitting anything to the IRS, any state revenue department, or other taxing authority.
 
