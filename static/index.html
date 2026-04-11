@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CPAgent</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1"></script>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- Setup Overlay -->
+<div id="setup-overlay" class="setup-overlay" style="display:none">
+  <div class="setup-card">
+    <h2>Tax Dashboard Setup</h2>
+    <p style="margin-bottom:20px;color:var(--text-secondary);font-size:13px">
+      Configure your tax filing environment. You can update these settings later.
+    </p>
+    <div class="form-group">
+      <label>Root Folder Path</label>
+      <input type="text" id="setup-root" placeholder="/path/to/Tax Agent">
+    </div>
+    <div class="form-group">
+      <label>Filing Status</label>
+      <select id="setup-filing">
+        <option value="MFJ">Married Filing Jointly</option>
+        <option value="Single">Single</option>
+        <option value="MFS">Married Filing Separately</option>
+        <option value="HOH">Head of Household</option>
+      </select>
+    </div>
+    <h3 style="font-size:14px;margin:16px 0 12px">Primary Entity</h3>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Entity Name</label>
+        <input type="text" id="setup-entity-name" placeholder="e.g., Acme LLC">
+      </div>
+      <div class="form-group">
+        <label>Entity Type</label>
+        <select id="setup-entity-type">
+          <option>LLC (disregarded)</option>
+          <option>LLC (S-Corp elected)</option>
+          <option>S-Corp</option>
+          <option>C-Corp</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>State of Formation</label>
+        <input type="text" id="setup-entity-state" placeholder="e.g., CO">
+      </div>
+      <div class="form-group">
+        <label>Accounting Software</label>
+        <select id="setup-entity-accounting">
+          <option>Wave</option>
+          <option>QuickBooks Online</option>
+          <option>FreshBooks</option>
+          <option>Xero</option>
+          <option>Other</option>
+        </select>
+      </div>
+    </div>
+    <button class="btn btn-primary" style="margin-top:16px;width:100%" onclick="saveSetup()">
+      Save &amp; Launch Dashboard
+    </button>
+  </div>
+</div>
+
+<!-- Header -->
+<!-- Legal disclaimer (top of page, always visible) -->
+<div class="legal-disclaimer" role="alert" aria-live="polite">
+  <strong>DISCLAIMER — USE AT YOUR OWN RISK.</strong>
+  CPAgent is provided "as is", without warranty of any kind, express or implied, including but not limited to
+  the warranties of merchantability, fitness for a particular purpose, accuracy, and noninfringement. The
+  authors and contributors make <strong>no promises</strong> that this software produces correct or complete
+  results for your particular tax situation, and shall not be liable for any claim, damages, or other
+  liability arising from the use of this software. This tool is <strong>not tax advice</strong> and is not
+  a substitute for a licensed tax professional. Always verify all figures, forms, and filings with a
+  qualified CPA or tax attorney before submitting anything to the IRS, any state revenue department, or
+  other taxing authority.
+</div>
+
+<header class="header">
+  <div>
+    <h1>CPAgent</h1>
+    <div class="subtitle">Personal Tax Filing Command Center</div>
+  </div>
+  <div class="header-right">
+    <span id="error-badge" class="warning-badge" style="display:none" title="Parse errors detected">0 errors</span>
+    <span id="sse-dot" class="sse-dot disconnected" title="Live connection — data updates automatically when files change"></span>
+    <select id="year-select" title="Switch tax year (new year folders are detected automatically)"></select>
+    <!-- Legacy buttons kept in the DOM (hidden) so app.js handlers still bind — CPAgent auto-refreshes and auto-detects new year folders via the file watcher. -->
+    <button id="btn-refresh" hidden>Refresh</button>
+    <button id="btn-new-year" hidden>+ New Year</button>
+    <button id="btn-shutdown" title="Shut down CPAgent (disables auto-restart)" class="btn-shutdown">⏻ Shut down</button>
+  </div>
+</header>
+
+<div class="dashboard">
+
+  <!-- Filing Readiness strip (Phase E) — persistent across tabs -->
+  <div id="readiness-strip" class="readiness-strip" style="display:none">
+    <div class="readiness-main">
+      <div class="readiness-pct" id="readiness-pct">—</div>
+      <div class="readiness-text">
+        <div class="readiness-label">Ready to File</div>
+        <div class="readiness-sub" id="readiness-sub">Loading…</div>
+      </div>
+    </div>
+    <div class="readiness-bars" id="readiness-bars"></div>
+  </div>
+
+  <!-- Loading Indicator -->
+  <div id="loading-indicator" class="loading" style="display:none">Loading data...</div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="overview">Overview</button>
+    <button class="tab-btn" data-tab="schedule-c">Schedule C</button>
+    <button class="tab-btn" data-tab="findings">Findings <span id="findings-badge" class="badge CRITICAL" style="display:none"></span></button>
+    <button class="tab-btn" data-tab="bank-recon">Bank Rec</button>
+    <button class="tab-btn" data-tab="checklist">Checklist</button>
+    <button class="tab-btn" data-tab="strategy">Strategy</button>
+    <button class="tab-btn" data-tab="filing">Filing</button>
+    <button class="tab-btn" data-tab="settings">Settings</button>
+  </div>
+
+  <!-- Tab: Overview -->
+  <div id="tab-overview" class="tab-content active">
+    <div id="kpi-row" class="kpi-row"></div>
+    <div class="charts-row">
+      <div class="chart-card">
+        <h3>Revenue by Entity</h3>
+        <canvas id="chart-revenue" height="250"></canvas>
+      </div>
+      <div class="chart-card">
+        <h3>Top Expense Categories</h3>
+        <canvas id="chart-expenses" height="250"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab: Schedule C -->
+  <div id="tab-schedule-c" class="tab-content">
+    <div id="schedule-c-content"><div class="loading">Loading Schedule C data...</div></div>
+  </div>
+
+  <!-- Tab: Findings -->
+  <div id="tab-findings" class="tab-content">
+    <div id="findings-content"><div class="loading">Loading findings...</div></div>
+  </div>
+
+  <!-- Tab: Bank Reconciliation -->
+  <div id="tab-bank-recon" class="tab-content">
+    <div id="bank-recon-content"><div class="loading">Loading bank reconciliation...</div></div>
+  </div>
+
+  <!-- Tab: Document Checklist -->
+  <div id="tab-checklist" class="tab-content">
+    <div id="checklist-content"><div class="loading">Loading checklist...</div></div>
+  </div>
+
+  <!-- Tab: Strategy -->
+  <div id="tab-strategy" class="tab-content">
+    <div id="strategy-content"><div class="loading">Loading strategy analysis...</div></div>
+  </div>
+
+  <!-- Tab: Filing (Phase I) -->
+  <div id="tab-filing" class="tab-content">
+    <div id="filing-content">
+      <h2>IRS Form Generation</h2>
+      <p class="muted">Generate populated Form 1040 + Schedule C + Schedule SE PDFs from parsed data.
+        A "DRAFT — NOT FOR FILING" watermark is applied until readiness ≥ 95% with zero BLOCKED/REQUIRED findings.</p>
+      <button id="btn-generate-filing" class="btn btn-primary">Generate IRS Draft PDF</button>
+
+      <h3 style="margin-top:24px">Federal Extension (Form 4868)</h3>
+      <p class="muted">Can't make the April 15 deadline? Generate a populated Form 4868 to get an automatic
+        6-month extension (until October 15) to <em>file</em>. Note: it does NOT extend the time to <em>pay</em> —
+        any estimated balance due should still be paid by April 15 to avoid late-payment penalty.</p>
+      <button id="btn-generate-extension" class="btn">Generate Extension (Form 4868)</button>
+
+      <h3 style="margin-top:24px">State Filing (Colorado DR 0104)</h3>
+      <p class="muted">Generate a populated Colorado state tax return draft. Round 1 only populates the
+        header fields (name, address, SSN) — the numeric lines still need to be filled in manually because
+        Colorado's line fields use positional addressing. File via <code>colorado.gov/revenueonline</code>
+        (free direct state e-file) or print and mail.</p>
+      <button id="btn-generate-state" class="btn">Generate State Filing PDF</button>
+
+      <h3 style="margin-top:24px">State Extension (CO DR 0158-I)</h3>
+      <p class="muted">Colorado automatically grants a 6-month filing extension if at least 90% of state tax
+        liability is paid by April 15. You only need to submit this form if you owe a balance.</p>
+      <button id="btn-generate-state-extension" class="btn">Generate State Extension</button>
+
+      <div id="filing-result" style="margin-top:16px"></div>
+    </div>
+  </div>
+
+  <!-- Tab: Settings -->
+  <div id="tab-settings" class="tab-content">
+    <div id="settings-content"><div class="loading">Loading settings...</div></div>
+    <!-- AI Settings section injected by enhancements.js -->
+    <div id="ai-settings-section" style="margin-top:24px"></div>
+  </div>
+
+</div>
+
+<!-- Toast Container -->
+<div id="toast-container" class="toast-container"></div>
+
+<script src="/static/app.js"></script>
+<script src="/static/enhancements.js"></script>
+</body>
+</html>

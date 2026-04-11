@@ -1,0 +1,7 @@
+flask>=3.0
+watchdog>=4.0
+pdfplumber>=0.11
+openpyxl>=3.1
+chardet>=5.0
+keyring>=24.0
+sqlcipher3-binary>=0.5; platform_system != "Windows"

@@ -1,0 +1,68 @@
+# ── Personal data (never commit) ────────────────────────────────────────────
+data/taxdash.db
+data/taxdash.db-shm
+data/taxdash.db-wal
+data/*.sqlite*
+app_config.json
+logs/
+*.log
+.secrets/
+.env
+.env.*
+
+# ── IRS / state form templates (re-downloadable via scripts/download_irs_forms.sh) ─
+filing/templates/*.pdf
+
+# ── Generated artifacts ─────────────────────────────────────────────────────
+scripts/CPAgent.icns
+scripts/CPAgent.iconset/
+scripts/CPAgent_icon.png
+
+# ── macOS ───────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ── venv ────────────────────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+
+# ── IDEs / tools ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.claude/
+
+# ── Stray archives ─────────────────────────────────────────────────────────
+*.zip
+
+# ── Test / coverage ─────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
