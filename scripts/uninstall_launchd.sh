@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Remove the CPAgent LaunchAgent.
+# Remove the Tax Dashboard LaunchAgent.
 
 set -euo pipefail
 
-DEST="$HOME/Library/LaunchAgents/com.cpagent.app.plist"
+DEST="$HOME/Library/LaunchAgents/com.batman.cpagent.plist"
 
 if [ ! -f "$DEST" ]; then
   echo "Nothing to uninstall — plist not found at $DEST"

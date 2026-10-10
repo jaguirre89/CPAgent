@@ -65,35 +65,89 @@ def _consolidated_values(parsed: dict, config: dict) -> dict:
 
     owner = config.get("owner_name") or ""
     first, _, last = owner.partition(" ")
+    spouse = config.get("spouse_name") or ""
+    sp_first, _, sp_last = spouse.partition(" ")
+
+    # Home office deduction from config preferences
+    home_office = float((config.get("preferences") or {}).get("home_office_total") or 0)
+    net_after_home = net - home_office if net > 0 else net
+
+    # SE tax computation
+    se_net = max(0.0, net_after_home * 0.9235)
+    se_tax = se_net * 0.153 if net_after_home > 0 else 0
+    se_deduction = se_tax / 2
+
+    # W-2 spouse income
+    kpis = (parsed.get("overview", {}) or {}).get("kpis", {}) or {}
+    spouse_wages = float(kpis.get("spouse_income") or 0)
+
+    # QBI deduction
+    qbi_rate = 0.20
+    qbi_deduction = max(0.0, net_after_home * qbi_rate) if net_after_home > 0 else 0.0
+
+    # Standard deduction
+    filing_status = (config.get("filing_status") or "MFJ").upper()
+    std_deduction_map = {"MFJ": 30000, "SINGLE": 15000, "HOH": 22500, "MFS": 15000}
+    std_deduction = std_deduction_map.get(filing_status, 30000)
+
+    # AGI and taxable income
+    total_income = spouse_wages + net_after_home
+    adjustments = se_deduction  # half of SE tax is above-the-line
+    agi = total_income - adjustments
+    total_deductions = std_deduction + qbi_deduction
+    taxable_income = max(0.0, agi - total_deductions)
+
+    # Filing status checkbox
+    fs_map = {"SINGLE": "fs_single", "MFJ": "fs_mfj", "MFS": "fs_mfs", "HOH": "fs_hoh"}
+    fs_key = fs_map.get(filing_status, "fs_mfj")
 
     values = {
         "schedule_c": {
             "proprietor_name": owner,
+            "ssn": "",  # User must enter SSN manually
             "business_name": schedules[0]["entity"] if schedules else "",
+            "address": config.get("address") or "",
+            "city_state_zip": config.get("city_state_zip") or "",
             "line_1_gross_receipts": _money(gross),
             "line_3_net": _money(gross),
             "line_7_gross_income": _money(gross),
             "line_28_total_expenses": _money(total_exp),
             "line_29_tentative_profit": _money(net),
-            "line_31_net_profit": _money(net),
+            "line_30_home_office": _money(home_office),
+            "line_31_net_profit": _money(net_after_home),
         },
         "schedule_se": {
             "name": owner,
-            "line_2_net_from_sch_c": _money(net),
-            "line_3_total": _money(net),
-            "line_4a_net_earnings": _money(net * 0.9235),
-            "line_6_total_se": _money(net * 0.9235),
-            "line_12_total_se_tax": _money(net * 0.9235 * 0.153 if net > 0 else 0),
-            "line_13_deduction": _money((net * 0.9235 * 0.153 / 2) if net > 0 else 0),
+            "line_2_net_from_sch_c": _money(net_after_home),
+            "line_3_total": _money(net_after_home),
+            "line_4a_net_earnings": _money(se_net),
+            "line_6_total_se": _money(se_net),
+            "line_12_total_se_tax": _money(se_tax),
+            "line_13_deduction": _money(se_deduction),
         },
         "form_1040": {
             "first_name_mi": first,
             "last_name": last or owner,
+            "spouse_first_name_mi": sp_first,
+            "spouse_last_name": sp_last,
+            "address": config.get("address") or "",
+            "city_state_zip": config.get("city_state_zip") or "",
+            fs_key: "1",  # Check the filing status box
+            "line_1a_wages": _money(spouse_wages),
+            "line_1z_total_wages": _money(spouse_wages),
+            "line_8_sched1": _money(net_after_home),
+            "line_9_total_income": _money(total_income),
+            "line_10_adjustments": _money(adjustments),
+            "line_11_agi": _money(agi),
+            "line_12_deduction": _money(std_deduction),
+            "line_13_qbi": _money(qbi_deduction),
+            "line_14_total_ded": _money(total_deductions),
+            "line_15_taxable": _money(taxable_income),
         },
         "by_category": by_category,
         "gross": gross,
         "total_expenses": total_exp,
-        "net": net,
+        "net": net_after_home,
     }
 
     for cat, amt in by_category.items():
@@ -299,6 +353,15 @@ def generate_state_filing(
     spouse = config.get("spouse_name") or ""
     sp_first, _, sp_last = spouse.partition(" ")
 
+    state_tax = kpis.get("state_tax") or {}
+    fed_taxable = float(state_tax.get("taxable_income") or 0)
+    co_rate = 0.044  # 4.40% flat rate for 2025
+    co_tax = fed_taxable * co_rate
+    withholding = float(state_tax.get("estimated_withholding") or 0)
+    est_payments = float(state_tax.get("estimated_payments_made") or 0)
+    total_payments = withholding + est_payments
+    balance_or_overpay = co_tax - total_payments
+
     values = {
         "first_name": first,
         "last_name": last or owner,
@@ -311,7 +374,23 @@ def generate_state_filing(
         "state": "CO",
         "zip": config.get("zip") or "",
         "phone": config.get("phone") or "",
+        # Dollar lines
+        "line_1_fed_taxable": _money(fed_taxable),
+        "line_2_additions": "",  # No additions for simple Schedule C filer
+        "line_3_subtotal": _money(fed_taxable),
+        "line_4_subtractions": "",  # No subtractions (TABOR refund TODO)
+        "line_5_co_taxable": _money(fed_taxable),
+        "line_6_co_tax": _money(co_tax),
+        "line_10_total_tax": _money(co_tax),
+        "line_20_income_tax_paid": _money(withholding) if withholding else "",
+        "line_21_estimated_paid": _money(est_payments) if est_payments else "",
+        "line_33_total_payments": _money(total_payments) if total_payments else "",
     }
+    if balance_or_overpay > 0:
+        values["line_39_amount_owed"] = _money(balance_or_overpay)
+    elif balance_or_overpay < 0:
+        values["line_34_overpayment"] = _money(abs(balance_or_overpay))
+        values["line_36_refund"] = _money(abs(balance_or_overpay))
 
     reader = PdfReader(str(template))
     populated = _populate(reader, CO_DR0104, values)
@@ -328,25 +407,25 @@ def generate_state_filing(
     with open(out_path, "wb") as f:
         writer.write(f)
 
-    state_tax = kpis.get("state_tax") or {}
     return {
         "path": str(out_path),
         "pages": len(writer.pages),
         "state": "CO",
         "state_name": "Colorado",
         "form": "DR 0104",
-        "state_taxable_income": state_tax.get("taxable_income"),
-        "state_tax_before_payments": state_tax.get("tax_before_payments"),
-        "state_tax_owed": state_tax.get("tax_owed"),
+        "state_taxable_income": fed_taxable,
+        "state_tax_before_payments": round(co_tax, 2),
+        "state_tax_owed": round(max(0, balance_or_overpay), 2),
+        "withholding": round(withholding, 2),
+        "estimated_payments": round(est_payments, 2),
         "watermarked": True,
         "notes": state_tax.get("notes", []),
         "instructions": (
-            "The header fields (name, address, SSN) are populated; dollar lines "
-            "are NOT yet auto-populated because CO's line-by-line fields use "
-            "positional addressing that requires per-form verification. Open "
-            "the PDF, fill in the dollar lines using the state tax breakdown "
-            "above, then e-file via Revenue Online at colorado.gov/revenueonline "
-            "(free direct state e-file) or print and mail."
+            "Dollar lines are auto-populated from CPAgent's tax computation. "
+            "Verify: Line 1 = federal taxable income, Line 6 = 4.40% flat rate. "
+            "TABOR refund and state-specific subtractions are NOT applied — adjust "
+            "manually if applicable. e-File via colorado.gov/revenueonline (free) "
+            "or print and mail."
         ),
         "generated_at": datetime.utcnow().isoformat() + "Z",
     }
@@ -415,9 +494,12 @@ def generate_state_extension(
             "generated_at": datetime.utcnow().isoformat() + "Z",
         }
 
-    template = TEMPLATES / "co_dr0158i_2024.pdf"
+    template = TEMPLATES / "co_dr0158i_2025.pdf"
     if not template.exists():
-        return {"error": "co_dr0158i_2024.pdf not found — run scripts/download_irs_forms.sh"}
+        # Fall back to 2024 if the 2025 revision hasn't been added yet
+        template = TEMPLATES / "co_dr0158i_2024.pdf"
+        if not template.exists():
+            return {"error": "co_dr0158i_2025.pdf not found in filing/templates/"}
 
     state_tax = kpis.get("state_tax") or {}
     estimated = float(state_tax.get("tax_before_payments") or 0)
@@ -426,28 +508,43 @@ def generate_state_extension(
     payments_total = withholding + prior_payments
     balance = max(0.0, estimated - payments_total)
 
-    owner = config.get("owner_name") or ""
+    def _split_name(full: str) -> tuple[str, str, str]:
+        parts = (full or "").strip().split()
+        if not parts:
+            return "", "", ""
+        if len(parts) == 1:
+            return parts[0], "", ""
+        if len(parts) == 2:
+            return parts[0], "", parts[1]
+        return parts[0], parts[1][0], " ".join(parts[2:])
+
+    first, mi, last = _split_name(config.get("owner_name") or "")
+    sp_first, sp_mi, sp_last = _split_name(config.get("spouse_name") or "")
+
     values = {
-        "name": owner,
+        "first_name": first,
+        "middle_initial": mi,
+        "last_name": last,
         "ssn": config.get("ssn_last4") or "",
+        "spouse_first_name": sp_first,
+        "spouse_middle_initial": sp_mi,
+        "spouse_last_name": sp_last,
+        "spouse_ssn": "",
         "address": config.get("address") or "",
         "city": config.get("city") or "",
         "state": "CO",
         "zip": config.get("zip") or "",
-        "spouse_name": config.get("spouse_name") or "",
-        "spouse_ssn": "",
         "estimated_total_tax": _money(estimated),
+        "withholding": _money(withholding) if withholding else "",
+        "estimated_payments": _money(prior_payments) if prior_payments else "",
+        "other_credits": "",
         "total_prior_payments": _money(payments_total),
         "balance_due": _money(balance),
         "amount_paying": _money(balance),
     }
 
     reader = PdfReader(str(template))
-    populated = _populate(reader, CO_DR0158I, values)
-
-    writer = PdfWriter()
-    for p in populated.pages:
-        writer.add_page(p)
+    writer = _populate(reader, CO_DR0158I, values)
 
     out_dir = Path(year_path) / _locate_worksheets_folder(year_path)
     out_dir.mkdir(parents=True, exist_ok=True)

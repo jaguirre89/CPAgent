@@ -117,8 +117,11 @@ async function init() {
 
 function showSetup() {
   $('#setup-overlay').style.display = 'flex';
-  // Leave the setup field blank — user must enter their tax folder path explicitly.
-  $('#setup-root').value = '';
+  const defaultRoot = window.location.pathname.includes('tax_dashboard')
+    ? window.location.pathname.replace('/tax_dashboard/', '/')
+    : '/Users/batman/Documents/01_PERSONAL/00_Tax Agent';
+
+  $('#setup-root').value = defaultRoot;
 }
 
 async function saveSetup() {
@@ -188,7 +191,7 @@ async function loadTab(tabId) {
 
   switch (tabId) {
     case 'overview': renderOverview(data); break;
-    case 'schedule-c': renderScheduleC(data); break;
+    case 'schedule-c': await loadScheduleCNotes(state.currentYear); renderScheduleC(data); break;
     case 'findings': renderFindings(data); break;
     case 'bank-recon': renderBankRecon(data); break;
     case 'checklist': renderChecklist(data); break;
@@ -356,13 +359,15 @@ function renderScheduleC(data) {
 
       const noteKey = `sc_${idx}_${line.line}`;
       const noteVal = state.notes[noteKey] || '';
+      const scNoteKey = `${sc.entity}__${line.line}`;
+      const scNoteVal = (state._scNotes || {})[scNoteKey] || noteVal;
 
       html += `<tr class="${rowClass}">
         <td>${line.line}</td>
         <td>${line.description}</td>
         <td class="${amountClass}">${line.amount !== 0 ? fmt(line.amount) : ''}</td>
         <td style="font-size:11px">${sources}</td>
-        <td><textarea class="note-input" data-note-key="${noteKey}">${noteVal}</textarea></td>
+        <td><textarea class="note-input sc-note" data-note-key="${noteKey}" data-entity="${sc.entity}" data-line="${line.line}">${scNoteVal}</textarea></td>
       </tr>`;
     }
 
@@ -379,11 +384,175 @@ function renderScheduleC(data) {
 
   container.innerHTML = html;
   attachNoteListeners();
+  attachScheduleCNoteListeners();
+}
+
+function attachScheduleCNoteListeners() {
+  document.querySelectorAll('.sc-note').forEach(ta => {
+    let debounce = null;
+    ta.addEventListener('input', () => {
+      clearTimeout(debounce);
+      debounce = setTimeout(async () => {
+        const entity = ta.dataset.entity;
+        const lineNum = ta.dataset.line;
+        const year = state.currentYear;
+        try {
+          await fetch(`/api/schedule-c-notes/${year}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ entity, line_number: lineNum, note_text: ta.value }),
+          });
+        } catch (e) { console.error('SC note save failed', e); }
+      }, 800);
+    });
+  });
+}
+
+// ─── Home Office Calculator ───────────────────────────────────────────────
+
+async function loadHomeOfficeSection(year) {
+  const section = document.getElementById('home-office-section');
+  if (!section) return;
+
+  try {
+    const resp = await fetch(`/api/home-office/${year}`);
+    if (!resp.ok) throw new Error('Failed to load');
+    const data = await resp.json();
+
+    let html = '';
+
+    // Show detected leases
+    if (data.detected_leases && data.detected_leases.length) {
+      html += `<div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px">
+        Detected lease files: ${data.detected_leases.map(l => `<strong>${l.file}</strong>${l.address_hint ? ` (${l.address_hint})` : ''}`).join(', ')}
+      </div>`;
+    }
+
+    // Show existing periods
+    if (data.periods && data.periods.length) {
+      if (data.move_detected) {
+        html += `<div style="background:#fefce8;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:12px">
+          <strong>Move detected:</strong> ${data.period_count} addresses on file for ${year}. Deduction is pro-rated by period.
+        </div>`;
+      }
+
+      html += `<table class="data-table" style="margin-bottom:12px"><thead><tr>
+        <th>Address</th><th>Dates</th><th>Method</th><th class="num">Office / Total Sq Ft</th>
+        <th class="num">Monthly Rent</th><th class="num">Deduction</th><th style="width:60px"></th>
+      </tr></thead><tbody>`;
+
+      data.periods.forEach(p => {
+        html += `<tr>
+          <td>${p.address}</td>
+          <td style="font-size:11px">${p.months_in_year} months (in ${year})</td>
+          <td>${p.method === 'simplified' ? 'Simplified' : 'Regular'}</td>
+          <td class="num">${p.office_sqft || '—'} / ${p.total_sqft || '—'} (${p.business_pct}%)</td>
+          <td class="num">${p.breakdown.rent ? fmt(p.breakdown.rent / (p.months_in_year || 1)) + '/mo' : '—'}</td>
+          <td class="num"><strong>${fmt(p.chosen_deduction)}</strong></td>
+          <td><button class="btn btn-sm ho-delete" data-id="${p.period_id}" style="color:var(--negative)">✕</button></td>
+        </tr>`;
+      });
+
+      html += `</tbody></table>`;
+      html += `<div style="font-size:14px;font-weight:600;margin-bottom:16px">
+        Total Home Office Deduction: <span style="color:var(--positive)">${fmt(data.total_deduction)}</span>
+        <span style="font-size:11px;font-weight:400;color:var(--text-secondary);margin-left:8px">→ Schedule C Line 30</span>
+      </div>`;
+    }
+
+    // Add period form
+    html += `
+      <div style="background:var(--bg-primary);border-radius:8px;padding:16px;margin-top:8px">
+        <h4 style="margin:0 0 12px;font-size:13px">${data.periods && data.periods.length ? 'Add another address (mid-year move)' : 'Add home office details'}</h4>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div class="form-group"><label style="font-size:11px">Address</label>
+            <input type="text" id="ho-address" placeholder="e.g., 123 Example St, CO Springs" value="${(data.detected_leases || [])[data.periods?.length || 0]?.address_hint || ''}"></div>
+          <div class="form-group"><label style="font-size:11px">Lease file (in Home Office folder)</label>
+            <input type="text" id="ho-lease-file" placeholder="e.g., 123 Example St- Signed lease.pdf" value="${(data.detected_leases || [])[data.periods?.length || 0]?.file || ''}"></div>
+          <div class="form-group"><label style="font-size:11px">Start date at this address</label>
+            <input type="date" id="ho-start" value="${year}-01-01"></div>
+          <div class="form-group"><label style="font-size:11px">End date at this address</label>
+            <input type="date" id="ho-end" value="${year}-12-31"></div>
+          <div class="form-group"><label style="font-size:11px">Total home sq ft</label>
+            <input type="number" id="ho-total-sqft" placeholder="e.g., 1800"></div>
+          <div class="form-group"><label style="font-size:11px">Office sq ft</label>
+            <input type="number" id="ho-office-sqft" placeholder="e.g., 150"></div>
+          <div class="form-group"><label style="font-size:11px">Monthly rent</label>
+            <input type="number" id="ho-rent" step="0.01" placeholder="e.g., 2200"></div>
+          <div class="form-group"><label style="font-size:11px">Monthly utilities</label>
+            <input type="number" id="ho-utilities" step="0.01" placeholder="e.g., 250"></div>
+          <div class="form-group"><label style="font-size:11px">Monthly internet</label>
+            <input type="number" id="ho-internet" step="0.01" placeholder="e.g., 80"></div>
+          <div class="form-group"><label style="font-size:11px">Monthly insurance</label>
+            <input type="number" id="ho-insurance" step="0.01" placeholder="e.g., 30"></div>
+          <div class="form-group"><label style="font-size:11px">Method</label>
+            <select id="ho-method">
+              <option value="simplified">Simplified ($5/sqft, max $1,500)</option>
+              <option value="regular">Regular (actual expenses × business %)</option>
+            </select></div>
+        </div>
+        <button id="ho-save" class="btn btn-primary" style="margin-top:12px">Save period</button>
+      </div>
+    `;
+
+    section.innerHTML = html;
+
+    // Wire save button
+    document.getElementById('ho-save').addEventListener('click', async () => {
+      const body = {
+        address: document.getElementById('ho-address').value,
+        lease_file: document.getElementById('ho-lease-file').value,
+        start_date: document.getElementById('ho-start').value,
+        end_date: document.getElementById('ho-end').value,
+        total_sqft: parseFloat(document.getElementById('ho-total-sqft').value) || null,
+        office_sqft: parseFloat(document.getElementById('ho-office-sqft').value) || null,
+        monthly_rent: parseFloat(document.getElementById('ho-rent').value) || null,
+        monthly_utilities: parseFloat(document.getElementById('ho-utilities').value) || null,
+        monthly_internet: parseFloat(document.getElementById('ho-internet').value) || null,
+        monthly_insurance: parseFloat(document.getElementById('ho-insurance').value) || null,
+        method: document.getElementById('ho-method').value,
+      };
+      try {
+        await fetch(`/api/home-office/${year}`, {
+          method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+        });
+        state.data = null;
+        loadHomeOfficeSection(year);
+      } catch (e) { console.error('Home office save failed', e); }
+    });
+
+    // Wire delete buttons
+    section.querySelectorAll('.ho-delete').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Remove this home office period?')) return;
+        await fetch(`/api/home-office/${year}/${btn.dataset.id}`, { method: 'DELETE' });
+        state.data = null;
+        loadHomeOfficeSection(year);
+      });
+    });
+
+  } catch (e) {
+    section.innerHTML = '<div style="color:var(--text-secondary);font-size:12px">Home office data unavailable.</div>';
+  }
+}
+
+// Load SC notes from DB when data loads
+async function loadScheduleCNotes(year) {
+  try {
+    const resp = await fetch(`/api/schedule-c-notes/${year}`);
+    if (!resp.ok) return;
+    const notes = await resp.json();
+    state._scNotes = {};
+    for (const n of notes) {
+      state._scNotes[`${n.entity}__${n.line_number}`] = n.note_text;
+    }
+  } catch (e) { /* ignore */ }
 }
 
 // ─── Findings Tab ──────────────────────────────────────────────────────────
 
 function renderFindings(data) {
+  if (window.__enhancementsOwnFindings) return;
   const findings = data.findings || [];
   const container = $('#findings-content');
 
@@ -519,25 +688,72 @@ function renderChecklist(data) {
   categories.forEach(cat => {
     html += `<h3 class="section-header">${cat.name} <span style="font-weight:400;font-size:12px;color:var(--text-secondary)">(${cat.folder})</span></h3>`;
     html += `<table class="data-table" style="margin-bottom:12px"><thead><tr>
-      <th>Document</th><th style="width:80px">Status</th><th>Files Found</th><th style="width:80px">Count</th>
+      <th>Document</th><th style="width:80px">Status</th><th>Files Found</th><th style="width:80px">Count</th><th style="width:130px">Override</th>
     </tr></thead><tbody>`;
 
     (cat.items || []).forEach(item => {
       const statusClass = item.status === 'FOUND' ? 'FOUND' :
                           item.status === 'PARTIAL' ? 'PARTIAL' :
-                          item.status === 'MISSING' ? 'MISSING' : 'NA';
-      html += `<tr>
+                          item.status === 'MISSING' ? 'MISSING' :
+                          item.status === 'DISABLED' ? 'DISABLED' :
+                          item.status === 'STORED_ELSEWHERE' ? 'FOUND' : 'NA';
+      const overrideVal = item.override || 'active';
+      html += `<tr${item.status === 'DISABLED' ? ' style="opacity:0.5"' : ''}>
         <td>${item.doc}</td>
         <td><span class="status ${statusClass}">${item.status}</span></td>
         <td style="font-size:11px">${(item.files || []).join(', ') || '—'}</td>
-        <td class="num">${item.count_found}${item.count_expected !== 'any' ? ' / ' + item.count_expected : ''}</td>
+        <td class="num">${item.count_found}${item.count_expected !== 'any' ? ' / ' + item.count_expected : ''}${item.count_found > item.count_expected && item.count_expected !== 'any' ? ' <span title="Includes multiple account types (checking + credit card). See Bank Rec tab for breakdown." style="color:var(--accent);cursor:help;font-size:14px">ⓘ</span>' : ''}</td>
+        <td><select class="checklist-override" data-cat="${cat.name}" data-doc="${item.doc}" style="font-size:11px;padding:2px 4px">
+          <option value="active"${overrideVal === 'active' ? ' selected' : ''}>Active</option>
+          <option value="disabled"${overrideVal === 'disabled' ? ' selected' : ''}>Disabled</option>
+          <option value="stored_elsewhere"${overrideVal === 'stored_elsewhere' ? ' selected' : ''}>Stored Elsewhere</option>
+          <option value="referenced_in"${overrideVal === 'referenced_in' ? ' selected' : ''}>Referenced In...</option>
+        </select></td>
       </tr>`;
     });
 
     html += '</tbody></table>';
   });
 
+  // ── Home Office Calculator section ──
+  html += `
+    <h3 class="section-header" style="margin-top:24px">Home Office Deduction Calculator</h3>
+    <div id="home-office-section" style="margin-bottom:20px">
+      <div class="loading">Loading home office data...</div>
+    </div>
+  `;
+
   container.innerHTML = html;
+
+  // Load Home Office data asynchronously
+  loadHomeOfficeSection(state.currentYear);
+
+  // Wire override dropdowns
+  container.querySelectorAll('.checklist-override').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      const year = state.currentYear;
+      const body = { category: sel.dataset.cat, doc_name: sel.dataset.doc, status: sel.value };
+
+      // "Referenced In" needs file + amount from user
+      if (sel.value === 'referenced_in') {
+        const refFile = prompt('Which file contains this info?\n(e.g., 033125 WellsFargo.pdf)');
+        if (!refFile) { sel.value = 'active'; return; }
+        const refAmt = prompt('Amount? (e.g., 623.88 — leave blank if N/A)');
+        body.reference_file = refFile;
+        body.reference_amount = refAmt ? parseFloat(refAmt) : null;
+      }
+
+      try {
+        window.__suppressRefresh = Date.now() + 8000;
+        await fetch(`/api/checklist-override/${year}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        await new Promise(r => setTimeout(r, 500));
+        state.data = null;
+        loadTab('checklist');
+      } catch (e) { console.error('Override failed', e); }
+    });
+  });
 }
 
 // ─── Strategy Tab ──────────────────────────────────────────────────────────
@@ -631,6 +847,27 @@ async function renderSettings() {
   });
   html += `</div><button class="btn btn-primary" style="margin-top:8px" onclick="saveConstants()">Save Constants</button></div>`;
 
+  // Taxpayer Information (for IRS form population)
+  html += `<div class="settings-section"><h3>Taxpayer Information</h3>
+    <p class="muted" style="margin-bottom:12px;font-size:12px">Used to populate IRS forms (1040, 4868, Schedule C, state returns). Stored locally in your encrypted database — never sent to any API.</p>
+    <div class="form-row">
+      <div class="form-group"><label>Your Full Name</label><input type="text" id="tp-owner-name" value="${cfg.owner_name || ''}" placeholder="First Last"></div>
+      <div class="form-group"><label>Spouse Full Name</label><input type="text" id="tp-spouse-name" value="${cfg.spouse_name || ''}" placeholder="First Last (if MFJ)"></div>
+      <div class="form-group"><label>SSN (last 4 only)</label><input type="text" id="tp-ssn-last4" value="${cfg.ssn_last4 || ''}" maxlength="4" placeholder="1234" style="width:80px"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Street Address</label><input type="text" id="tp-address" value="${cfg.address || ''}" placeholder="123 Main St"></div>
+      <div class="form-group"><label>City</label><input type="text" id="tp-city" value="${cfg.city || ''}" placeholder="Denver"></div>
+      <div class="form-group"><label>State</label><input type="text" id="tp-state" value="${cfg.state || ''}" placeholder="CO" style="width:50px"></div>
+      <div class="form-group"><label>ZIP</label><input type="text" id="tp-zip" value="${cfg.zip || ''}" placeholder="80202" style="width:80px"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>City, State ZIP (for IRS forms)</label><input type="text" id="tp-city-state-zip" value="${cfg.city_state_zip || ''}" placeholder="Denver, CO 80202"></div>
+      <div class="form-group"><label>Phone</label><input type="text" id="tp-phone" value="${cfg.phone || ''}" placeholder="(303) 555-1234"></div>
+    </div>
+    <button class="btn btn-primary" onclick="saveTaxpayerInfo()">Save Taxpayer Info</button>
+  </div>`;
+
   // App Preferences
   html += `<div class="settings-section"><h3>App Preferences</h3>
     <div class="form-row">
@@ -651,6 +888,10 @@ async function renderSettings() {
       <div class="form-group">
         <label>Home Office Total Deduction ($)</label>
         <input type="number" step="0.01" id="pref-home-office" value="${cfg.preferences?.home_office_total || 0}">
+      </div>
+      <div class="form-group">
+        <label>2025 Estimated Tax Payments ($)</label>
+        <input type="number" step="0.01" id="pref-est-payments" value="${cfg.preferences?.estimated_tax_payments_made || 0}" placeholder="Only payments designated for 2025">
       </div>
     </div>
     <button class="btn btn-primary" onclick="savePreferences()">Save Preferences</button>
@@ -771,9 +1012,31 @@ async function savePreferences() {
   cfg.preferences = cfg.preferences || {};
   cfg.preferences.estimated_marginal_rate = parseFloat($('#pref-marginal').value) || 0.22;
   cfg.preferences.home_office_total = parseFloat($('#pref-home-office').value) || 0;
+  cfg.preferences.estimated_tax_payments_made = parseFloat($('#pref-est-payments').value) || 0;
   await api('config', { method: 'POST', body: JSON.stringify(cfg) });
   state.data = null;
   showToast('Preferences saved');
+}
+
+async function saveTaxpayerInfo() {
+  const cfg = state.config;
+  cfg.owner_name = $('#tp-owner-name').value.trim();
+  cfg.spouse_name = $('#tp-spouse-name').value.trim();
+  cfg.ssn_last4 = $('#tp-ssn-last4').value.trim();
+  cfg.address = $('#tp-address').value.trim();
+  cfg.city = $('#tp-city').value.trim();
+  cfg.state = $('#tp-state').value.trim();
+  cfg.zip = $('#tp-zip').value.trim();
+  cfg.city_state_zip = $('#tp-city-state-zip').value.trim();
+  cfg.phone = $('#tp-phone').value.trim();
+  // Auto-compose city_state_zip if not manually set
+  if (!cfg.city_state_zip && cfg.city && cfg.state && cfg.zip) {
+    cfg.city_state_zip = `${cfg.city}, ${cfg.state} ${cfg.zip}`;
+    $('#tp-city-state-zip').value = cfg.city_state_zip;
+  }
+  await api('config', { method: 'POST', body: JSON.stringify(cfg) });
+  state.data = null;
+  showToast('Taxpayer info saved — regenerate forms to see updated fields');
 }
 
 // ─── Notes Auto-Save ───────────────────────────────────────────────────────

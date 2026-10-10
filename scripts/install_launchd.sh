@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Install CPAgent as a macOS LaunchAgent so it runs at login and survives
-# reboots. Writes a templated copy of com.cpagent.app.plist into
-# ~/Library/LaunchAgents/ with absolute paths substituted in.
+# Install the Tax Dashboard as a macOS LaunchAgent so it runs at login and
+# survives reboots. Writes a templated copy of com.batman.taxdashboard.plist
+# into ~/Library/LaunchAgents/ with absolute paths substituted in.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-TEMPLATE="$SCRIPT_DIR/com.cpagent.app.plist"
-DEST="$HOME/Library/LaunchAgents/com.cpagent.app.plist"
+TEMPLATE="$SCRIPT_DIR/com.batman.cpagent.plist"
+DEST="$HOME/Library/LaunchAgents/com.batman.cpagent.plist"
 LOGS_DIR="$APP_DIR/logs"
 PYTHON_BIN="${PYTHON_BIN:-$(command -v python3)}"
 
@@ -37,5 +37,5 @@ echo "  Python: $PYTHON_BIN"
 echo "  WorkingDir: $APP_DIR"
 echo "  Logs: $LOGS_DIR"
 echo
-echo "Verify with: launchctl list | grep cpagent"
+echo "Verify with: launchctl list | grep taxdashboard"
 echo "Browse to:   http://localhost:5050"

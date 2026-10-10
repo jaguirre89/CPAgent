@@ -79,14 +79,50 @@ SCHEDULE_SE = {
     "line_13_deduction":        "topmostSubform[0].Page1[0].f1_16[0]",
 }
 
-# Form 1040 (f1040.pdf) — taxpayer header only; line flows stay TODO
+# Form 1040 (f1040.pdf) — 2025 version
+# Header fields: f1_01..f1_06 = name/SSN
+# Address: f1_20..f1_27 (under Address_ReadOrder)
+# Filing status checkboxes: c1_1..c1_7
+# Income lines: f1_47+ (sequential per line on the form)
 FORM_1040 = {
+    # Header — identification
     "first_name_mi":            "topmostSubform[0].Page1[0].f1_01[0]",
     "last_name":                "topmostSubform[0].Page1[0].f1_02[0]",
     "ssn":                      "topmostSubform[0].Page1[0].f1_03[0]",
     "spouse_first_name_mi":     "topmostSubform[0].Page1[0].f1_04[0]",
     "spouse_last_name":         "topmostSubform[0].Page1[0].f1_05[0]",
     "spouse_ssn":               "topmostSubform[0].Page1[0].f1_06[0]",
+    # Address
+    "address":                  "topmostSubform[0].Page1[0].Address_ReadOrder[0].f1_20[0]",
+    "apt_no":                   "topmostSubform[0].Page1[0].Address_ReadOrder[0].f1_21[0]",
+    "city_state_zip":           "topmostSubform[0].Page1[0].Address_ReadOrder[0].f1_22[0]",
+    # Filing status checkboxes (only one should be checked)
+    # c1_1=Single, c1_2=MFJ, c1_3=MFS, c1_4=HOH, c1_5=QSS
+    "fs_single":                "topmostSubform[0].Page1[0].c1_1[0]",
+    "fs_mfj":                   "topmostSubform[0].Page1[0].c1_2[0]",
+    "fs_mfs":                   "topmostSubform[0].Page1[0].c1_3[0]",
+    "fs_hoh":                   "topmostSubform[0].Page1[0].c1_4[0]",
+    "fs_qss":                   "topmostSubform[0].Page1[0].c1_5[0]",
+    # Income — line 1a (W-2 wages)
+    "line_1a_wages":            "topmostSubform[0].Page1[0].f1_47[0]",
+    # Line 1z (sum of 1a-1h) — for simple cases = 1a
+    "line_1z_total_wages":      "topmostSubform[0].Page1[0].f1_55[0]",
+    # Line 8 — additional income from Schedule 1
+    "line_8_sched1":            "topmostSubform[0].Page1[0].f1_62[0]",
+    # Line 9 — total income
+    "line_9_total_income":      "topmostSubform[0].Page1[0].f1_63[0]",
+    # Line 10 — adjustments from Schedule 1
+    "line_10_adjustments":      "topmostSubform[0].Page1[0].f1_64[0]",
+    # Line 11 — adjusted gross income
+    "line_11_agi":              "topmostSubform[0].Page1[0].f1_65[0]",
+    # Line 12 — standard deduction or itemized
+    "line_12_deduction":        "topmostSubform[0].Page1[0].f1_66[0]",
+    # Line 13 — QBI deduction
+    "line_13_qbi":              "topmostSubform[0].Page1[0].f1_67[0]",
+    # Line 14 — total deductions (line 12 + 13)
+    "line_14_total_ded":        "topmostSubform[0].Page1[0].f1_68[0]",
+    # Line 15 — taxable income
+    "line_15_taxable":          "topmostSubform[0].Page1[0].f1_69[0]",
 }
 
 # Form 4868 — Application for Automatic Extension of Time To File
@@ -123,28 +159,51 @@ CO_DR0104 = {
     "state":                    "State 5",
     "zip":                      "ZIP Code 4",
     "phone":                    "Phone Number 3",
-    # Line fields come with numeric tooltips in the PDF. These are
-    # discovered positionally (see the comment in irs_forms.py::_populate).
-    # We set only the header + flat-rate computation into Line 1 / Line 20 / etc.
+    # Dollar lines — "Form Question N" maps to Line N on the form
+    "line_1_fed_taxable":       "Form Question 1",    # Federal taxable income (from 1040 line 15)
+    "line_2_additions":         "Form Question 2",    # Additions to income
+    "line_3_subtotal":          "Form Question 3",    # Line 1 + Line 2
+    "line_4_subtractions":      "Form Question 4",    # Subtractions from income
+    "line_5_co_taxable":        "Form Question 5",    # CO taxable income (Line 3 - Line 4)
+    "line_6_co_tax":            "Form Question 6",    # CO tax (Line 5 × 4.40%)
+    "line_7_alt_min_tax":       "Form Question 7",    # Alternative minimum tax
+    "line_9_recapture":         "Form Question 9",    # Recapture of prior year credits
+    "line_10_total_tax":        "Form Question 10",   # Total tax (Line 6 + 7 + 9)
+    # Credits & payments
+    "line_20_income_tax_paid":  "Form Question 20",   # CO income tax withheld
+    "line_21_estimated_paid":   "Form Question 21",   # Estimated tax payments
+    "line_33_total_payments":   "Form Question 33",   # Total payments
+    "line_34_overpayment":      "Form Question 34",   # Overpayment (if payments > tax)
+    "line_36_refund":           "Form Question 36",   # Amount to be refunded
+    "line_39_amount_owed":      "Form Question 39",   # Amount you owe
 }
 
 # Colorado DR 0158-I — Extension of Time for Filing Individual Income Tax
-# Fields are generic "Text143"…"Text162" — unnamed but sequential. Based on
-# the published form layout, the top block is name/address/SSN and the bottom
-# block is the estimated tax / withholding / balance due computation.
+# 2025 revision uses human-readable field names (with thin-space \u200a chars
+# inside SSN labels). The top block is name/address; the worksheet at the
+# bottom drives line 1 (est. total tax) → line 2a/2b/2c (payments) → 2d
+# (subtotal) → line 3 (balance due) → "Amount of Payment".
 CO_DR0158I = {
-    "name":                 "Text143",
-    "ssn":                  "Text144",
-    "address":              "Text146",
-    "city":                 "Text147",
-    "state":                "Text148",
-    "zip":                  "Text149",
-    "spouse_name":          "Text150",
-    "spouse_ssn":           "Text151",
-    "estimated_total_tax":  "Text155",
-    "total_prior_payments": "Text156",
-    "balance_due":          "Text157",
-    "amount_paying":        "Text158",
+    "first_name":           "Type your first name",
+    "middle_initial":       "Middle initial",
+    "last_name":            "Last name",
+    "ssn":                  "S\u200aS\u200aN or I\u200aT\u200aI\u200aN",
+    "spouse_first_name":    "Spouse's First Name",
+    "spouse_middle_initial":"Spouse's Middle Initial",
+    "spouse_last_name":     "Spouse's Last Name",
+    "spouse_ssn":           "Spouse\u2019s S\u200aS\u200aN or I\u200aT\u200aI\u200aN",
+    "address":              "Street Address",
+    "city":                 "City",
+    "state":                "State",
+    "zip":                  "ZIP Code",
+    # Worksheet — drives the balance-due computation
+    "estimated_total_tax":  "Worksheet Line1",       # Estimated 2025 CO tax
+    "withholding":          "Worksheet Line2a",      # CO income tax withheld
+    "estimated_payments":   "Worksheet Line2b",      # Other prepayments / est. tax
+    "other_credits":        "Worksheet Line2c",      # Other credits
+    "total_prior_payments": "Worksheet Line2d",      # Subtotal of 2a+2b+2c
+    "balance_due":          "Worksheet Line3",       # Line 1 - Line 2d
+    "amount_paying":        "Amount of Payment",
 }
 
 

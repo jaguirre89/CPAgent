@@ -1,49 +1,27 @@
 {
-  "root_path": "/Users/YOUR_USERNAME/Documents/Tax Agent",
+  "root_path": "/path/to/Tax Agent",
   "current_year": 2025,
   "filing_status": "MFJ",
-  "owner_name": "Your Name",
-  "spouse_name": "Spouse Name",
-  "address": "123 Main St",
-  "city": "YourCity",
-  "state": "CO",
-  "zip": "80000",
-
   "entities": [
     {
-      "name": "Acme LLC",
-      "entity_type": "LLC (disregarded)",
-      "state": "CO",
-      "accounting_system": "Wave",
-      "folder_name": "03_Acme_LLC",
-      "is_parent": false,
+      "name": "Example Entity",
+      "entity_type": "",
+      "state": "",
       "ein": "",
+      "accounting_system": "",
+      "folder_name": "",
       "bank_accounts": [
-        {
-          "name": "Operating Checking",
-          "institution": "Wells Fargo"
-        }
+        { "name": "", "institution": "" }
       ],
       "credit_cards": [
-        {
-          "name": "Business Visa",
-          "institution": "Citi"
-        }
-      ]
+        { "name": "", "institution": "" }
+      ],
+      "is_parent": false
     }
   ],
-
   "preferences": {
     "estimated_marginal_rate": 0.22,
-    "home_office_total": 0,
-    "spouse_w2_income": 0
+    "home_office_total": 0
   },
-
-  "retention": {
-    "findings_history_days": 730,
-    "audit_log_days": 730,
-    "llm_suggestions_days": 730
-  },
-
   "csv_mappings": {}
 }

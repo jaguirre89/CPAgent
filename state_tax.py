@@ -1,11 +1,9 @@
 """Per-state tax estimation.
 
-Colorado has a hand-tuned handler below because the TABOR refund mechanism
-can adjust the flat rate year-to-year. Every other US state + DC uses the
-generic registry in `states_registry.py`, which has flat-rate math for the
-12 flat-rate states, a zero-tax stub for the 9 no-income-tax states, and
-a framework stub for the progressive-bracket states (contributors welcome
-to add bracket tables).
+This is a round-1 framework — currently only Colorado is fully implemented
+because that's where Cressio LLC and Invenst Labs LLC are registered. Other
+states are stubbed with a zero estimate and a REVIEW finding so the user
+knows they need to either enable the state or confirm no filing is required.
 
 The architecture is: a registry maps two-letter state codes to handler
 functions that compute state-level taxable income, tax owed, and payments

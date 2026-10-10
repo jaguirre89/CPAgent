@@ -273,6 +273,19 @@ def _lookup_mapping(account_name, entity_config):
     is only used as the seed source for the rules store — runtime lookups go
     through the store so user corrections persist.
     """
+    # Direct match: if the account name IS already a Schedule C category, return it
+    valid_categories = {
+        "Advertising", "Car and truck expenses", "Commissions and fees", "Contract labor",
+        "Depreciation", "Employee benefit programs", "Insurance (other than health)",
+        "Interest (mortgage)", "Interest (other)", "Legal and professional",
+        "Office expense", "Pension and profit-sharing", "Rent - vehicles/equipment",
+        "Rent - other", "Repairs and maintenance", "Supplies", "Taxes and licenses",
+        "Travel", "Meals (50% limit)", "Utilities", "Wages", "Other expenses",
+        "Gross receipts", "Returns and allowances",
+    }
+    if account_name in valid_categories:
+        return account_name
+
     try:
         from learning import rules_store
         entity_scope = entity_config.get("name") if entity_config else None

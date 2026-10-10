@@ -83,10 +83,11 @@ def get_budget_state() -> dict:
         "spent_usd": round(spent, 4),
         "remaining_usd": round(max(0, b["ceiling_usd"] - spent), 4),
         "percent_used": round(100 * spent / b["ceiling_usd"], 1) if b["ceiling_usd"] else 0,
+        "llm_enabled": bool(b.get("llm_enabled", 1)),
     }
 
 
-def update_budget(ceiling_usd: float | None = None, period: str | None = None) -> dict:
+def update_budget(ceiling_usd: float | None = None, period: str | None = None, llm_enabled: bool | None = None) -> dict:
     b = _active_budget()
     if ceiling_usd is not None:
         db.execute(
@@ -98,6 +99,11 @@ def update_budget(ceiling_usd: float | None = None, period: str | None = None) -
         db.execute(
             "UPDATE llm_budget SET period = ?, period_start = ?, updated_at = datetime('now') WHERE id = ?",
             (period, now, b["id"]),
+        )
+    if llm_enabled is not None:
+        db.execute(
+            "UPDATE llm_budget SET llm_enabled = ?, updated_at = datetime('now') WHERE id = ?",
+            (1 if llm_enabled else 0, b["id"]),
         )
     return get_budget_state()
 
@@ -167,6 +173,8 @@ def suggest_rules(items: list[dict], config: dict, year: int) -> dict:
 
     model_id = get_active_model()
     budget = get_budget_state()
+    if not budget.get("llm_enabled", True):
+        raise LLMUnavailable("AI features are disabled. Enable via the header toggle or Settings.")
     scrubbed_payload, redaction_map = pii_scrubber.scrub(items, config)
 
     system_prompt = (
@@ -304,6 +312,8 @@ def suggest_filename(file_bytes_preview: bytes, filename: str, config: dict) -> 
         text = str(file_bytes_preview[:200])
     model_id = get_active_model()
     budget = get_budget_state()
+    if not budget.get("llm_enabled", True):
+        raise LLMUnavailable("AI features are disabled. Enable via the header toggle or Settings.")
     entity_names = [e.get("name") for e in config.get("entities", [])]
 
     scrubbed_text, rmap = pii_scrubber.scrub({"filename": filename, "preview": text}, config)

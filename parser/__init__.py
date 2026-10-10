@@ -135,8 +135,8 @@ def _apply_gl_reclassifications(entity_csv_data, gl_result, entity_name):
         is_income_account = "income" in (finding.get("account") or "").lower()
 
         if not suggestion or suggestion.get("category") is None:
-            # category=None means "Exclude from Schedule C" (e.g., tax payments,
-            # personal transfers). Route reduction to the originating bucket.
+            # category=None means "Exclude from Schedule C" (e.g., IRS tax payments,
+            # personal ATM deposits). Route reduction to the originating bucket.
             amount = abs(finding.get("group_total", 0))
             if is_income_account:
                 reclassified_income_total += amount
@@ -150,9 +150,9 @@ def _apply_gl_reclassifications(entity_csv_data, gl_result, entity_name):
         category = suggestion["category"]
 
         if category == "Gross receipts":
-            # This is income — add to income list
+            # This is income — add to income list with recognizable name
             income.append({
-                "account_name": "Reclassified Income",
+                "account_name": "Example Client Income",
                 "account_number": "",
                 "amount": amount,
                 "_reclassified": True,
@@ -235,7 +235,9 @@ def parse_year(year_path, config, tax_constants):
                 gl = reconcile_gl(entity_path, _year_num, entity["name"])
                 entity_data[entity["name"]]["gl_reconciliation"] = gl
                 findings.extend(gl.get("findings", []))
-                # Reclassify auto-classified GL groups into proper P&L categories
+
+                # Apply auto-classified GL groups back to P&L data so Schedule C
+                # picks them up: reduce Uncategorized Expense, add to proper category.
                 _apply_gl_reclassifications(entity_data[entity["name"]], gl, entity["name"])
             except Exception as e:
                 logger.warning(f"gl reconciliation failed for {entity['name']}: {e}")
@@ -258,7 +260,7 @@ def parse_year(year_path, config, tax_constants):
     spouse_w2 = _discover_spouse_w2(year_path)
 
     # Build overview from schedule C data
-    overview = build_overview(schedule_c_data, entity_data, tax_constants, config, spouse_w2=spouse_w2)
+    overview = build_overview(schedule_c_data, entity_data, tax_constants, config, spouse_w2=spouse_w2, year=_year_num)
 
     # Strategy engine
     strategy_data = run_strategies(schedule_c_data, config, tax_constants)
@@ -292,7 +294,7 @@ def parse_year(year_path, config, tax_constants):
     return _apply_findings_engine(data, year_num, config)
 
 
-def build_overview(schedule_c_data, entity_data, tax_constants, config, spouse_w2=None):
+def build_overview(schedule_c_data, entity_data, tax_constants, config, spouse_w2=None, year=0):
     """Build overview KPI and chart data from parsed results."""
     schedules = schedule_c_data.get("schedules", [])
 
@@ -316,6 +318,18 @@ def build_overview(schedule_c_data, entity_data, tax_constants, config, spouse_w
         for line in sc.get("expense_lines", []):
             cat = line["description"]
             expense_categories[cat] = expense_categories.get(cat, 0) + line["amount"]
+
+    # Home office deduction (Schedule C Line 30) — computed from DB periods
+    try:
+        from parser.home_office import compute_total_deduction
+        ho_result = compute_total_deduction(year or 2025)
+        home_office_deduction = ho_result.get("total_deduction", 0)
+    except Exception as e:
+        logger.warning(f"Home office deduction failed: {e}")
+        home_office_deduction = 0
+
+    # Apply home office deduction to net profit (Line 30 → Line 31)
+    total_net -= home_office_deduction
 
     # Self-employment tax: 15.3% of 92.35% of net SE earnings
     #   6.2% + 6.2% Social Security (capped at wage base) + 1.45% + 1.45% Medicare
@@ -371,16 +385,14 @@ def build_overview(schedule_c_data, entity_data, tax_constants, config, spouse_w
     )
     federal_income_tax = taxable_income * marginal_rate
 
-    # Estimated payments already made — scan parsed GL reconciliation output for
-    # IRS USATAXPYMT entries so the card reflects what's been paid. `entity_data`
-    # is passed in from the parse_year flow once gl_reconciler has run.
-    est_payments_made = 0.0
-    for ed in entity_data.values():
-        gl = (ed or {}).get("gl_reconciliation") or {}
-        for g in gl.get("groups", []) or []:
-            memo = (g.get("memo_pattern") or "").lower()
-            if "irs" in memo and ("taxpymt" in memo or "taxpmt" in memo or "us treasury" in memo):
-                est_payments_made += float(g.get("total") or 0)
+    # Estimated payments already made — use the manual override in preferences.
+    # The GL may contain IRS USATAXPYMT entries but these could be prior-year
+    # balance-due payments (e.g., 2024 tax owed paid in 2025), not current-year
+    # estimated payments. Only count payments the user has explicitly confirmed
+    # as current-year estimated payments.
+    est_payments_made = float(
+        config.get("preferences", {}).get("estimated_tax_payments_made", 0) or 0
+    )
 
     # Spouse federal withholding also reduces tax owed.
     estimated_tax_owed_before = se_tax + federal_income_tax
@@ -420,8 +432,13 @@ def build_overview(schedule_c_data, entity_data, tax_constants, config, spouse_w
             "standard_deduction": std_deduction,
             "marginal_rate": marginal_rate,
             "filing_status": filing_status,
-            "home_office_deduction": config.get("preferences", {}).get("home_office_total", 0),
-            "vehicle_deduction": 0,  # populated from vehicle data
+            "home_office_deduction": round(home_office_deduction, 2),
+            "vehicle_deduction": round(sum(
+                line.get("amount", 0)
+                for sc in schedules
+                for line in sc.get("lines", [])
+                if line.get("line") == "9"
+            ), 2),
             "spouse_income": round(spouse_w2_amount, 2),
             "spouse_federal_withholding": round(spouse_w2_fed_wh, 2),
             "spouse_w2_details": (spouse_w2 or {}).get("w2s", []),

@@ -24,9 +24,23 @@ def _parse_wf_date(filename):
     return None
 
 
+def _parse_apple_month(filename, year):
+    """Parse Apple Card statement month from filename like 'Apple Card Statement - March 2025.pdf'."""
+    match = re.search(r"-\s*([A-Za-z]+)\s+(\d{4})\.pdf$", filename, re.IGNORECASE)
+    if match:
+        month_name = match.group(1)
+        file_year = int(match.group(2))
+        if file_year != year:
+            return None
+        for i, name in enumerate(MONTH_FULL):
+            if name.lower().startswith(month_name.lower()):
+                return f"{year}-{i+1:02d}"
+    return None
+
+
 def _parse_citi_month(filename, year):
-    """Parse Citi CC statement month from filename like 'Citi-CC_XXXX_March 05.pdf'."""
-    match = re.search(r"_(\w+)(?:\s+\d+)?\.pdf$", filename, re.IGNORECASE)
+    """Parse Citi CC statement month from filename like 'Citi-CC_8552_March 05.pdf'."""
+    match = re.search(r"_([A-Za-z]+)(?:\s+\d+)?\.pdf$", filename, re.IGNORECASE)
     if match:
         month_name = match.group(1).strip()
         # Handle "(2026)" suffix for January spillover
@@ -55,13 +69,17 @@ def build_bank_reconciliation(year_path, config, year):
         pdf_results = parse_all_pdfs_in_folder(entity_path)
 
         # Group by account type
-        wf_statements = []
+        wf_checking = []
+        wf_cc = []
         citi_statements = []
         other_statements = []
 
         for pdf in pdf_results:
             if pdf.get("institution") == "Wells Fargo":
-                wf_statements.append(pdf)
+                if pdf.get("type") == "cc_statement":
+                    wf_cc.append(pdf)
+                else:
+                    wf_checking.append(pdf)
             elif pdf.get("institution") == "Citi":
                 citi_statements.append(pdf)
             elif pdf.get("type") in ("bank_statement", "cc_statement"):
@@ -73,7 +91,7 @@ def build_bank_reconciliation(year_path, config, year):
             institution = bank_acct.get("institution", "")
 
             if "wells fargo" in institution.lower():
-                monthly = _build_monthly_summary(wf_statements, year)
+                monthly = _build_monthly_summary(wf_checking, year)
                 status = "COMPLETE" if len(monthly) >= 12 else ("PARTIAL" if monthly else "MISSING")
                 gaps = _find_gaps(monthly, year)
 
@@ -85,7 +103,7 @@ def build_bank_reconciliation(year_path, config, year):
                     "months": monthly,
                     "status": status,
                     "gaps": gaps,
-                    "statement_count": len(wf_statements),
+                    "statement_count": len(wf_checking),
                 })
 
                 if gaps:
@@ -116,23 +134,59 @@ def build_bank_reconciliation(year_path, config, year):
                     "statement_count": len(citi_statements),
                 })
             elif "apple" in institution.lower():
-                # Apple Card - no statements available
+                # Apple Card — scan for "Apple Card Statement - Month YYYY.pdf" files
+                apple_stmts = [p for p in pdf_results if "apple" in p.get("file", "").lower()]
+                monthly = _build_apple_monthly_summary(apple_stmts, entity_path, year)
+                status = "COMPLETE" if len(monthly) >= 12 else ("PARTIAL" if monthly else "MISSING")
+                gaps = _find_gaps(monthly, year)
                 accounts.append({
                     "name": f"{entity['name']} — {cc_name} ({institution})",
                     "entity": entity["name"],
                     "type": "credit_card",
                     "institution": institution,
-                    "months": [],
-                    "status": "MISSING",
-                    "gaps": [f"{year}-{m:02d}" for m in range(1, 13)],
-                    "statement_count": 0,
+                    "months": monthly,
+                    "status": status,
+                    "gaps": gaps,
+                    "statement_count": len(apple_stmts),
                 })
-                findings.append({
-                    "topic": "Missing Apple Card Statements",
-                    "priority": "BLOCKED",
-                    "finding": f"{entity['name']}: No Apple Card (Goldman Sachs) statements found. "
-                               f"Balance Sheet shows Apple Card activity. Download all 12 monthly statements.",
+                if gaps:
+                    findings.append({
+                        "topic": "Bank Statement Gaps",
+                        "priority": "REVIEW",
+                        "finding": f"{entity['name']} {cc_name}: Missing statements for: {', '.join(gaps)}.",
+                    })
+
+        # Auto-detect Wells Fargo CC statements not in config
+        if wf_cc:
+            # Check if WF CC is already configured
+            configured_wf_cc = any(
+                "wells fargo" in cc.get("institution", "").lower()
+                for cc in entity.get("credit_cards", [])
+            )
+            if not configured_wf_cc:
+                # Extract account suffix from first CC statement
+                acct_suffix = wf_cc[0].get("account_number", "")
+                cc_label = f"WF Signify Card (...{acct_suffix})" if acct_suffix else "Wells Fargo Credit Card"
+                monthly = _build_cc_monthly_summary_from_wf(wf_cc, year)
+                status = "COMPLETE" if len(monthly) >= 12 else ("PARTIAL" if monthly else "MISSING")
+                gaps = _find_gaps(monthly, year)
+                accounts.append({
+                    "name": f"{entity['name']} — {cc_label} (Wells Fargo)",
+                    "entity": entity["name"],
+                    "type": "credit_card",
+                    "institution": "Wells Fargo",
+                    "months": monthly,
+                    "status": status,
+                    "gaps": gaps,
+                    "statement_count": len(wf_cc),
+                    "auto_detected": True,
                 })
+                if gaps:
+                    findings.append({
+                        "topic": "Bank Statement Gaps",
+                        "priority": "REVIEW",
+                        "finding": f"{entity['name']} {cc_label}: Missing statements for: {', '.join(gaps)}.",
+                    })
 
     return {"accounts": accounts, "findings": findings, "status": "complete"}
 
@@ -195,6 +249,51 @@ def _build_cc_monthly_summary(statements, year):
             "source_file": stmt.get("file", ""),
         }
 
+    return [monthly[k] for k in sorted(monthly.keys())]
+
+
+def _build_apple_monthly_summary(statements, entity_path, year):
+    """Build monthly summary from Apple Card statements (filename-based month detection)."""
+    monthly = {}
+    # Also scan raw filenames in the folder for Apple Card PDFs
+    apple_files = []
+    if os.path.isdir(entity_path):
+        apple_files = [f for f in os.listdir(entity_path) if "apple" in f.lower() and f.lower().endswith(".pdf")]
+
+    for f in apple_files:
+        month_key = _parse_apple_month(f, year)
+        if not month_key:
+            continue
+        # Try to find the corresponding parsed statement
+        parsed = next((s for s in statements if s.get("file") == f), {})
+        monthly[month_key] = {
+            "month": month_key,
+            "previous_balance": parsed.get("previous_balance"),
+            "new_balance": parsed.get("new_balance"),
+            "total_payments": parsed.get("total_payments"),
+            "total_charges": parsed.get("total_charges"),
+            "status": parsed.get("status", "PARTIAL"),
+            "source_file": f,
+        }
+    return [monthly[k] for k in sorted(monthly.keys())]
+
+
+def _build_cc_monthly_summary_from_wf(statements, year):
+    """Build monthly summary from Wells Fargo CC statements (auto-detected)."""
+    monthly = {}
+    for stmt in statements:
+        month_key = stmt.get("statement_month")
+        if not month_key or not month_key.startswith(str(year)):
+            continue
+        monthly[month_key] = {
+            "month": month_key,
+            "previous_balance": stmt.get("previous_balance"),
+            "new_balance": stmt.get("new_balance"),
+            "total_payments": stmt.get("total_payments"),
+            "total_charges": stmt.get("total_charges"),
+            "status": stmt.get("status", "PARTIAL"),
+            "source_file": stmt.get("file", ""),
+        }
     return [monthly[k] for k in sorted(monthly.keys())]
 
 
