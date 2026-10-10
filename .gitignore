@@ -10,8 +10,6 @@ logs/
 .env
 .env.*
 
-# ── IRS / state form templates (re-downloadable via scripts/download_irs_forms.sh) ─
-filing/templates/*.pdf
 
 # ── Generated artifacts ─────────────────────────────────────────────────────
 scripts/CPAgent.icns
@@ -66,3 +64,13 @@ ENV/
 .coverage
 htmlcov/
 .tox/
+
+# ── Local taxpayer data (never commit) ──────────────────────────────────────
+data/*.db*
+backups/
+*.bak
+/*.json
+!/app_config.example.json
+/*.html
+2025 Tax Year/
+2026 Tax Year/

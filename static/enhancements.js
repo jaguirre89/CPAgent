@@ -5,6 +5,7 @@
 */
 
 (function () {
+  window.__enhancementsOwnFindings = true;
   const $ = (sel) => document.querySelector(sel);
 
   function currentYear() {
@@ -134,6 +135,7 @@
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ fingerprint: fp, reason: 'User dismissed from Findings tab' }),
             });
+            // Fade out the card
             const card = btn.closest('.finding-card');
             if (card) {
               card.style.transition = 'opacity 0.3s, max-height 0.3s';
@@ -178,6 +180,7 @@
     document.body.appendChild(modal);
     modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
 
+    // Build items for the suggest API
     const items = findings.map(f => ({
       memo_pattern: f.memo_pattern || '',
       samples: f.samples || [],
@@ -202,6 +205,7 @@
         `AI returned ${suggestions.length} suggestions` +
         (costLabel ? ` (cost: ${costLabel})` : '') + '.';
 
+      // Build suggestion table matching findings to suggestions
       const rows = findings.map((f, idx) => {
         const s = suggestions.find(s =>
           s.memo_pattern === (f.memo_pattern || '') ||
@@ -216,6 +220,7 @@
         const rationale = s.rationale || '';
         const patternSuggestion = s.pattern_suggestion || f.memo_pattern || '';
 
+        // Build sample transaction details for context
         const samples = (f.samples || []).map(t =>
           `<div style="font-size:10px;color:#64748b;margin-top:2px">${t.date || ''} · ${(t.memo || '').substring(0, 80)} · $${Math.abs(t.amount || 0).toFixed(2)}</div>`
         ).join('');
@@ -223,7 +228,9 @@
         return `
           <tr data-idx="${idx}" data-memo="${(patternSuggestion).replace(/"/g, '&quot;')}"
               data-entity="${(f.entity || '').replace(/"/g, '&quot;')}">
-            <td><input type="checkbox" class="batch-check" ${autoAccept ? 'checked' : ''}></td>
+            <td>
+              <input type="checkbox" class="batch-check" ${autoAccept ? 'checked' : ''}>
+            </td>
             <td>
               <strong>${f.memo_pattern || '(no memo)'}</strong>
               <div class="muted" style="font-size:11px">${f.group_count || 0} txns · $${(f.group_total || 0).toFixed(2)} · ${f.account || ''}</div>
@@ -264,12 +271,15 @@
       document.getElementById('batch-resolve-results').style.display = 'block';
       document.getElementById('batch-resolve-actions').style.display = 'block';
 
+      // Select-all toggle
       document.getElementById('batch-select-all').addEventListener('change', function () {
         modal.querySelectorAll('.batch-check').forEach(cb => { cb.checked = this.checked; });
       });
 
+      // Cancel
       document.getElementById('batch-cancel').addEventListener('click', () => modal.remove());
 
+      // Apply selected
       document.getElementById('batch-apply').addEventListener('click', async () => {
         const applyBtn = document.getElementById('batch-apply');
         applyBtn.disabled = true;
@@ -340,9 +350,11 @@
     const modal = document.createElement('div');
     modal.id = 'teach-modal';
     modal.className = 'modal-overlay';
+    const findingText = finding || '';
     modal.innerHTML = `
       <div class="modal">
         <h3>Teach a rule</h3>
+        ${findingText ? `<div style="background:#f8fafc;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:#475569;max-height:80px;overflow:auto">${findingText}</div>` : ''}
         <label>Pattern type</label>
         <select id="teach-type">
           <option value="memo">Memo contains</option>
@@ -357,20 +369,87 @@
         </select>
         <label>Scope (optional entity)</label>
         <input type="text" id="teach-scope" value="${(entity || '').replace(/"/g, '&quot;')}" placeholder="Leave blank for all entities">
+        <label>Evidence / Notes</label>
+        <textarea id="teach-notes" rows="3" placeholder="e.g., Checks match 1099 issued to Example Client LLC. See 2025_Example-Checks.png in 09_Contractors_1099s/"></textarea>
+        <label>Supporting document (path in year folder)</label>
+        <input type="text" id="teach-evidence-file" placeholder="e.g., 09_Contractors_1099s/2025_Example-Checks.png">
         <div class="modal-actions">
           <button id="teach-cancel" class="btn">Cancel</button>
+          <button id="teach-ai" class="btn" style="background:#7c3aed;color:#fff" title="Have AI analyze the evidence and suggest a rule">Analyze with AI</button>
           <button id="teach-save" class="btn btn-primary">Save rule</button>
         </div>
       </div>
     `;
     document.body.appendChild(modal);
+    // Hide AI button if LLM is disabled
+    fetchJSON('/api/llm/budget').then(b => {
+      if (!b.llm_enabled) $('#teach-ai').style.display = 'none';
+    }).catch(() => { $('#teach-ai').style.display = 'none'; });
     $('#teach-cancel').addEventListener('click', () => modal.remove());
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+    // "Analyze with AI" — sends the finding + notes to LLM for rule suggestion
+    $('#teach-ai').addEventListener('click', async () => {
+      const notes = $('#teach-notes').value || '';
+      const pattern = $('#teach-pattern').value || '';
+      const entity = $('#teach-scope').value || '';
+      const evidence = $('#teach-evidence-file').value || '';
+      const findingCtx = findingText || '';
+
+      const btn = $('#teach-ai');
+      btn.disabled = true;
+      btn.textContent = 'Analyzing…';
+
+      try {
+        const year = currentYear();
+        const result = await fetchJSON('/api/rules/suggest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            items: [{
+              memo_pattern: pattern,
+              samples: [findingCtx],
+              group_total: 0,
+              group_count: 1,
+              user_notes: notes,
+              evidence_file: evidence,
+            }],
+            year,
+          }),
+        });
+
+        if (result.suggestions && result.suggestions.length) {
+          const s = result.suggestions[0];
+          // Pre-fill the form with the AI suggestion
+          if (s.category) {
+            const catSel = $('#teach-category');
+            for (const opt of catSel.options) {
+              if (opt.value === s.category) { catSel.value = s.category; break; }
+            }
+          }
+          if (s.pattern_suggestion) {
+            $('#teach-pattern').value = s.pattern_suggestion;
+          }
+          const costLabel = result.cost_usd ? ` (cost: $${result.cost_usd.toFixed(4)})` : '';
+          toast(`AI suggests: ${s.category || 'Exclude'} — ${s.rationale || ''}${costLabel}`);
+        } else {
+          toast('AI returned no suggestions. Fill in manually.');
+        }
+      } catch (e) {
+        toast(`AI analysis failed: ${e.message}`);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Analyze with AI';
+      }
+    });
+
     $('#teach-save').addEventListener('click', async () => {
       const body = {
         pattern_type: $('#teach-type').value,
         pattern: $('#teach-pattern').value,
         schedule_c_category: $('#teach-category').value || null,
         entity_scope: $('#teach-scope').value || null,
+        notes: $('#teach-notes').value || null,
+        evidence_file: $('#teach-evidence-file').value || null,
       };
       try {
         const r = await fetchJSON('/api/rules/learn', {
@@ -380,6 +459,7 @@
         });
         modal.remove();
         toast(`Rule saved (id=${r.rule_id}) → ${body.schedule_c_category || 'Excluded'}. Findings updating…`);
+        // Refresh findings in-place instead of full page reload
         window.__suppressRefresh = Date.now() + 8000;
         setTimeout(() => { enhanceFindings(); refreshReadiness(); }, 2000);
       } catch (e) {
@@ -742,45 +822,104 @@
     });
   }
 
+  /* ─── Header budget indicator (AI kill switch) ─────────────────────────── */
+  async function refreshBudgetIndicator() {
+    const el = $('#budget-indicator');
+    if (!el) return;
+    try {
+      const b = await fetchJSON('/api/llm/budget');
+      el.style.display = 'flex';
+      const dot = $('#budget-dot');
+      const label = $('#budget-label');
+      if (!b.llm_enabled) {
+        dot.className = 'budget-dot disabled';
+        label.textContent = 'AI: OFF';
+        el.title = 'AI features disabled — click to enable';
+      } else {
+        const pct = b.percent_used || 0;
+        dot.className = 'budget-dot ' + (pct >= 90 ? 'red' : pct >= 60 ? 'amber' : 'green');
+        label.textContent = `$${b.spent_usd.toFixed(2)} / $${b.ceiling_usd.toFixed(2)}`;
+        el.title = `AI: ${pct.toFixed(0)}% of budget used — click to disable`;
+      }
+    } catch (e) {
+      el.style.display = 'none';
+    }
+  }
+
+  function wireBudgetToggle() {
+    const el = $('#budget-indicator');
+    if (!el) return;
+    el.addEventListener('click', async () => {
+      try {
+        const b = await fetchJSON('/api/llm/budget');
+        const newState = !b.llm_enabled;
+        await fetchJSON('/api/llm/budget', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ llm_enabled: newState }),
+        });
+        toast(newState ? 'AI features enabled' : 'AI features disabled');
+        refreshBudgetIndicator();
+      } catch (e) {
+        toast('Failed to toggle AI: ' + e.message);
+      }
+    });
+  }
+
   /* ─── Real-time refresh on SSE events ───────────────────────────────────── */
   let _refreshDebounce = null;
+  let _lastFullRefresh = 0;
   async function refreshAll() {
     clearTimeout(_refreshDebounce);
+    // Debounce aggressively — file watcher can fire dozens of events per second
+    // when files are being batch-dropped into folders. Wait 5 seconds after the
+    // last event before doing any work.
     _refreshDebounce = setTimeout(async () => {
+      const now = Date.now();
+      // Suppressed by interactive actions (e.g., checklist override save)
+      if (window.__suppressRefresh && now < window.__suppressRefresh) return;
+      // Rate-limit: don't do a full refresh more than once per 10 seconds
+      if (now - _lastFullRefresh < 10000) return;
+      _lastFullRefresh = now;
+
       const year = currentYear();
       try {
-        // Invalidate the server cache and force a re-parse so all cached endpoints
-        // return fresh data on the next tick.
         await fetch(`/api/refresh/${year}`, { method: 'POST' });
-      } catch (e) { /* ignore, SSE will retry */ }
+      } catch (e) { /* ignore */ }
 
       refreshReadiness();
-      renderOverviewEnhancements();
+      refreshBudgetIndicator();
 
-      // Re-fetch data for whichever tab is currently active so the user sees
-      // the update without needing to click anything. We dispatch a synthetic
-      // change event on the year selector — the legacy app.js treats that as
-      // "reload everything for this year" which is exactly what we want.
-      const sel = $('#year-select');
-      if (sel) sel.dispatchEvent(new Event('change'));
-
-      // Findings tab has its own render path layered on top of app.js
+      // Only auto-refresh the active tab if it's a read-only display tab.
+      // NEVER refresh tabs where the user may have form state (dropdowns,
+      // textareas, inputs) — that destroys their in-progress work.
       const activeTab = document.querySelector('.tab-content.active');
-      if (activeTab && activeTab.id === 'tab-findings') enhanceFindings();
-    }, 350);
+      const activeTabId = activeTab ? activeTab.id : '';
+      const readOnlyTabs = ['tab-overview', 'tab-bank-recon'];
+
+      if (readOnlyTabs.includes(activeTabId)) {
+        const sel = $('#year-select');
+        if (sel) sel.dispatchEvent(new Event('change'));
+      }
+
+      if (activeTabId === 'tab-overview') renderOverviewEnhancements();
+      if (activeTabId === 'tab-findings') enhanceFindings();
+    }, 5000);
   }
 
   /* ─── Boot ───────────────────────────────────────────────────────────────── */
   function boot() {
     refreshReadiness();
+    refreshBudgetIndicator();
     renderOverviewEnhancements();
     wireFilingTab();
     wireShutdown();
+    wireBudgetToggle();
 
     document.querySelectorAll('.tab-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const tab = btn.dataset.tab;
-        if (tab === 'findings') setTimeout(enhanceFindings, 200);
+        if (tab === 'findings') enhanceFindings();
         if (tab === 'settings') setTimeout(renderAISettings, 200);
         if (tab === 'overview') setTimeout(renderOverviewEnhancements, 200);
       });
@@ -801,12 +940,11 @@
       });
     } catch (e) { /* SSE optional */ }
 
-    // Periodic refresh fallback (every 10s — near real time)
+    // Periodic refresh — lightweight (readiness + budget only, no tab re-render)
     setInterval(() => {
       refreshReadiness();
-      renderOverviewEnhancements();
-      refreshYearList();
-    }, 10000);
+      refreshBudgetIndicator();
+    }, 30000);
   }
 
   /* ─── Auto-detect new year folders ─────────────────────────────────────── */

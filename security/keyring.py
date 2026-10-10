@@ -1,7 +1,7 @@
 """macOS Keychain wrapper for secrets that must never touch disk.
 
 Stores the SQLCipher master key and the Anthropic API key under the service
-`com.cpagent.app`. Falls back to an on-disk key file in APP_DIR/.secrets/
+`com.batman.taxdashboard`. Falls back to an on-disk key file in APP_DIR/.secrets/
 only if the `keyring` package is unavailable — in that case a REQUIRED finding is
 raised so the user knows encryption at rest is degraded.
 """
@@ -15,7 +15,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SERVICE = "com.cpagent.app"
+SERVICE = "com.batman.taxdashboard"
 ACCOUNT_DB_KEY = "db_master_key"
 ACCOUNT_ANTHROPIC = "anthropic_api_key"
 
@@ -79,6 +79,16 @@ def get_or_create_db_key() -> str:
     key = _get(ACCOUNT_DB_KEY)
     if key:
         return key
+    # Guard: a fresh key can never open an existing encrypted DB. Computed the
+    # same way as db.DB_PATH (db.py imports this module, so no import here).
+    db_path = Path(os.path.dirname(os.path.abspath(__file__))).parent / "data" / "taxdash.db"
+    if db_path.exists() and db_path.stat().st_size > 0:
+        raise RuntimeError(
+            f"Database {db_path} already exists but no DB master key was found "
+            "in the Keychain. Refusing to generate a new key, which would make "
+            "the existing data unreadable. Restore the original key "
+            f"(service={SERVICE!r}, account={ACCOUNT_DB_KEY!r}) and retry."
+        )
     key = secrets.token_hex(32)  # 64 hex chars = 256 bits
     backend = _set(ACCOUNT_DB_KEY, key)
     logger.info(f"Generated new DB master key (backend: {backend})")

@@ -33,7 +33,7 @@
     <div class="form-row">
       <div class="form-group">
         <label>Entity Name</label>
-        <input type="text" id="setup-entity-name" placeholder="e.g., Acme LLC">
+        <input type="text" id="setup-entity-name" placeholder="e.g., Cressio LLC">
       </div>
       <div class="form-group">
         <label>Entity Type</label>
@@ -66,25 +66,16 @@
 </div>
 
 <!-- Header -->
-<!-- Legal disclaimer (top of page, always visible) -->
-<div class="legal-disclaimer" role="alert" aria-live="polite">
-  <strong>DISCLAIMER — USE AT YOUR OWN RISK.</strong>
-  CPAgent is provided "as is", without warranty of any kind, express or implied, including but not limited to
-  the warranties of merchantability, fitness for a particular purpose, accuracy, and noninfringement. The
-  authors and contributors make <strong>no promises</strong> that this software produces correct or complete
-  results for your particular tax situation, and shall not be liable for any claim, damages, or other
-  liability arising from the use of this software. This tool is <strong>not tax advice</strong> and is not
-  a substitute for a licensed tax professional. Always verify all figures, forms, and filings with a
-  qualified CPA or tax attorney before submitting anything to the IRS, any state revenue department, or
-  other taxing authority.
-</div>
-
 <header class="header">
   <div>
     <h1>CPAgent</h1>
     <div class="subtitle">Personal Tax Filing Command Center</div>
   </div>
   <div class="header-right">
+    <div id="budget-indicator" class="budget-indicator" style="display:none" title="Click to toggle AI on/off">
+      <span id="budget-dot" class="budget-dot"></span>
+      <span id="budget-label">AI</span>
+    </div>
     <span id="error-badge" class="warning-badge" style="display:none" title="Parse errors detected">0 errors</span>
     <span id="sse-dot" class="sse-dot disconnected" title="Live connection — data updates automatically when files change"></span>
     <select id="year-select" title="Switch tax year (new year folders are detected automatically)"></select>

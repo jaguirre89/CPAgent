@@ -57,6 +57,19 @@ body {
   background: #22c55e; display: inline-block;
 }
 .header-right .sse-dot.disconnected { background: #ef4444; }
+
+/* Budget indicator (AI kill switch in header) */
+.budget-indicator {
+  display: flex; align-items: center; gap: 6px; cursor: pointer;
+  padding: 4px 10px; border-radius: 6px; font-size: 11px;
+  color: var(--text-on-dark); user-select: none; white-space: nowrap;
+}
+.budget-indicator:hover { background: rgba(255,255,255,0.15); }
+.budget-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.budget-dot.green { background: #22c55e; }
+.budget-dot.amber { background: #f59e0b; }
+.budget-dot.red { background: #ef4444; }
+.budget-dot.disabled { background: #94a3b8; }
 .warning-badge {
   background: var(--warning);
   color: #000;
@@ -250,19 +263,6 @@ body {
 .rec-category { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
 .rec-summary { font-size: 12px; color: #334155; line-height: 1.4; }
 
-/* Legal disclaimer banner */
-.legal-disclaimer {
-  background: #fef3c7;
-  border-bottom: 2px solid #f59e0b;
-  color: #78350f;
-  padding: 10px 24px;
-  font-size: 11px;
-  line-height: 1.5;
-  text-align: left;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
-.legal-disclaimer strong { color: #7c2d12; }
-
 /* Shutdown button in header */
 .btn-shutdown {
   background: #fff;
@@ -315,9 +315,12 @@ body {
 .finding-topic { font-weight: 600; font-size: 13px; }
 .finding-body { font-size: 13px; color: #334155; }
 .teach-btn { margin-top: 8px; padding: 4px 10px; font-size: 12px; }
+.dismiss-btn { margin-top: 8px; padding: 4px 10px; font-size: 12px; background: var(--bg-primary); color: var(--text-secondary); border: 1px solid #cbd5e1; }
+.dismiss-btn:hover { background: #fef2f2; color: #991b1b; border-color: #fca5a5; }
+.finding-actions { display: flex; gap: 6px; }
 
 /* Teach modal */
-.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 9000; }
+#teach-modal.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 9000; }
 .modal { background: #fff; padding: 24px; border-radius: 12px; width: 440px; max-width: 90vw; box-shadow: 0 10px 40px rgba(0,0,0,0.2); }
 .modal h3 { margin: 0 0 16px; }
 .modal label { display: block; font-size: 12px; font-weight: 600; color: #475569; margin-top: 10px; }
@@ -361,6 +364,7 @@ body {
 .status.FOUND, .status.COMPLETE, .status.READY { background: #dcfce7; color: #166534; }
 .status.MISSING, .status.NEEDED { background: #fef2f2; color: #991b1b; }
 .status.PARTIAL, .status.PENDING { background: #fefce8; color: #854d0e; }
+.status.DISABLED { background: #f1f5f9; color: #94a3b8; font-style: italic; }
 .status.NA { background: #f1f5f9; color: #64748b; }
 
 /* Strategy cards */

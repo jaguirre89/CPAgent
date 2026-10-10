@@ -43,13 +43,11 @@ SCHEDULE_C_LINE_MAP = {
 
 # Map Wave/QBO account names to Schedule C category names
 ACCOUNT_TO_SCHEDULE_C = {
-    # ─── Income accounts ────────────────────────────────────────────────────
-    # This is a seed set; users should add their own account names via the
-    # "Teach" UI in the Findings tab, which persists rules to SQLite and
-    # makes them indistinguishable from seeds at runtime.
-    "Consulting Income": "Gross receipts",
-    "Sales Income": "Gross receipts",
-    "Service Revenue": "Gross receipts",
+    # Income accounts
+    "CO Consulting Income": "Gross receipts",
+    "NC Consulting Income": "Gross receipts",
+    "Example Client Income": "Gross receipts",
+    "Example Project Income": "Gross receipts",
     "Sales Discounts": "Returns and allowances",
     "Cashback Rewards": "Gross receipts",  # Include but flag for review (generally not taxable)
     "Uncategorized Income": None,  # flagged as BLOCKING, still included in gross receipts

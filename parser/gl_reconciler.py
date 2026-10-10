@@ -44,7 +44,8 @@ MEMO_HEURISTICS = [
     (r"\bhrblock\b|\bh\s*r\s*block\b|\bhrb\b",        "Legal and professional", 0.9,  "H&R Block tax prep fees"),
     (r"\birs\b.*taxpy?mt|\bus\s*treasury\b",           None,                      1.0,  "Federal income tax payment — not Schedule C"),
     (r"\bharland\s*clarke\b",                          "Office expense",         0.95, "Check printing — office supplies"),
-    (r"\bstripe\b.*\btransfer\b",                      "Gross receipts",         0.70, "Stripe payout — merchant income (verify per customer; may need per-project split)"),
+    (r"\bstripe\b.*\btransfer\b",                      "Gross receipts",         0.55, "Stripe payout — needs user review (sometimes Example Client contractor income, sometimes own revenue)"),
+    (r"\bexample\s*client\b",                           "Example Client Income", 0.9, "Example Client contractor income"),
     (r"\bpaypal\b.*\btransfer\b",                      "Gross receipts",         0.85, "PayPal payout — merchant income"),
     (r"\bmobile\s*deposit\b",                          "Gross receipts",         0.6,  "Mobile deposit — typically customer payment (verify)"),
     (r"\bcostco\b",                                    "Supplies",               0.6,  "Costco purchase — usually supplies (verify)"),
@@ -199,12 +200,32 @@ def reconcile_gl(entity_path: str, year: int, entity_name: str) -> dict:
         if suggestion:
             cat = suggestion.get("category")
             cat_label = cat if cat else "Excluded from Schedule C"
-            severity = "REVIEW" if suggestion.get("confidence", 0) >= 0.8 else "REQUIRED"
-            finding_text = (
-                f"{entity_name}: {g['count']}× '{g['memo_pattern']}' transactions "
-                f"(${g['total']:.2f}) in {g['account']} → suggested {cat_label} "
-                f"({int(100*suggestion.get('confidence',0))}% conf). {suggestion.get('rationale','')}"
-            )
+            conf = suggestion.get("confidence", 0)
+            source = suggestion.get("rationale", "")
+            is_user_rule = "source=user" in source or conf >= 1.0
+
+            if is_user_rule and conf >= 0.9:
+                # High-confidence user rule — auto-applied, mark as LOGGED
+                severity = "LOGGED"
+                finding_text = (
+                    f"{entity_name}: {g['count']}× '{g['memo_pattern']}' transactions "
+                    f"(${g['total']:.2f}) → auto-classified as {cat_label} (user rule). "
+                    f"{source}"
+                )
+            elif conf >= 0.8:
+                severity = "REVIEW"
+                finding_text = (
+                    f"{entity_name}: {g['count']}× '{g['memo_pattern']}' transactions "
+                    f"(${g['total']:.2f}) in {g['account']} → suggested {cat_label} "
+                    f"({int(100*conf)}% conf). {source}"
+                )
+            else:
+                severity = "REQUIRED"
+                finding_text = (
+                    f"{entity_name}: {g['count']}× '{g['memo_pattern']}' transactions "
+                    f"(${g['total']:.2f}) in {g['account']} → suggested {cat_label} "
+                    f"({int(100*conf)}% conf). Needs review. {source}"
+                )
         else:
             severity = "REQUIRED"
             finding_text = (

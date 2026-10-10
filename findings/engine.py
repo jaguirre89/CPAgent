@@ -127,12 +127,14 @@ def diff_and_persist(current: list[Finding], year: int) -> dict:
     for fp, finding in current_by_fp.items():
         prev = previous.get(fp)
         if prev is None:
-            # Check if this was previously dismissed by the user
+            # Check if this was previously dismissed (might be outside the TTL window
+            # but still in the DB). Also check for a pre-existing RESOLVED entry.
             dismissed = db.query(
                 "SELECT 1 FROM findings_history WHERE fingerprint = ? AND year = ? AND severity = 'RESOLVED' AND resolved_at IS NOT NULL",
                 (fp, year),
             )
             if dismissed:
+                # User previously dismissed this finding — don't re-create it
                 dismissed_fps.add(fp)
                 continue
             db.execute(

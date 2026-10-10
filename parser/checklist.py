@@ -1,8 +1,13 @@
 """Document checklist — auto-generated from folder contents vs expected documents."""
 
+from __future__ import annotations
+
 import os
 import re
 import logging
+
+import db
+from parser.pdf_parser import parse_prior_return
 
 logger = logging.getLogger(__name__)
 
@@ -18,22 +23,21 @@ DEFAULT_EXPECTED = {
     "Vehicle": [
         {"doc": "Mileage Log", "pattern": r"(?i)(mileage|mile)", "required": False},
         {"doc": "Vehicle Registration", "pattern": r"(?i)(registration|title)", "required": False},
+        {"doc": "Vehicle Loan Statements (Interest)", "pattern": r"(?i)(loan|interest|auto|vehicle).*\.(pdf|csv)$", "required": False},
     ],
     "Home Office": [
-        {"doc": "Lease or Mortgage Statement", "pattern": r"(?i)(lease|mortgage|rent)", "required": False},
+        {"doc": "Lease or Mortgage Statement", "pattern": r"(?i)(lease|mortgage|rent)", "required": False, "count": "any"},
         {"doc": "Square Footage Record", "pattern": r"(?i)(square|sqft|footage)", "required": False},
     ],
     "Investments": [
-        {"doc": "1099-B (Brokerage)", "pattern": r"(?i)1099.?b", "required": False},
-        {"doc": "1099-DIV", "pattern": r"(?i)1099.?div", "required": False},
-        {"doc": "1099-INT", "pattern": r"(?i)1099.?int", "required": False},
+        {"doc": "1099 Investment Statements", "pattern": r"(?i)(1099|brokerage|schwab|fidelity|mssb|morgan.?stanley)", "required": False, "count": "any"},
     ],
     "Crypto": [
         {"doc": "Exchange CSV Export", "pattern": r"(?i)(crypto|exchange|coinbase|binance)", "required": False},
         {"doc": "1099-DA", "pattern": r"(?i)1099.?da", "required": False},
     ],
     "Contractors 1099s": [
-        {"doc": "1099-NEC Forms Issued", "pattern": r"(?i)(1099|nec)", "required": False, "count": "any"},
+        {"doc": "1099-NEC Forms Issued", "pattern": r"(?i)(1099|nec|\.pdf$)", "required": False, "count": "any"},
     ],
     "Tax Payments": [
         {"doc": "Estimated Payment Records (1040-ES)", "pattern": r"(?i)(1040.?es|estimated|payment)", "required": False},
@@ -76,7 +80,23 @@ def _classify_folder(folder_name):
     return None
 
 
-def _get_entity_expected_docs(entity_config):
+def _detect_account_groups(entity_path, institution_lower):
+    """Detect distinct account groups for an institution by scanning PDF filenames."""
+    if not os.path.isdir(entity_path):
+        return []
+    suffixes = set()
+    for f in os.listdir(entity_path):
+        if not f.lower().endswith(".pdf"):
+            continue
+        if institution_lower not in f.lower().replace(" ", "").replace("_", ""):
+            continue
+        # Extract 4-digit account number fragments
+        matches = re.findall(r"[_\-](\d{4})[_\-\s.]", f)
+        suffixes.update(matches)
+    return sorted(suffixes)
+
+
+def _get_entity_expected_docs(entity_config, entity_path=None):
     """Generate expected documents list for an entity."""
     docs = []
     name = entity_config.get("name", "Unknown")
@@ -90,18 +110,28 @@ def _get_entity_expected_docs(entity_config):
         "count": 1,
     })
 
-    # Bank statements for each configured bank account
+    # Bank statements — detect WF checking vs CC split from PDF content
+    has_wf = False
     for bank in entity_config.get("bank_accounts", []):
         bank_name = bank.get("name", "Bank")
         institution = bank.get("institution", "")
-        docs.append({
-            "doc": f"{bank_name} Statements ({institution})",
-            "pattern": r"(?i)(wellsfargo|wells.?fargo|wf|bank|statement).*\.pdf$" if "wells fargo" in institution.lower()
-                       else r"(?i)(bank|statement|checking).*\.pdf$",
-            "required": True,
-            "count": 12,
-            "type": "monthly",
-        })
+        if "wells fargo" in institution.lower():
+            has_wf = True
+            docs.append({
+                "doc": f"{bank_name} Statements ({institution})",
+                "pattern": r"(?i)\d{6}\s*wellsfargo.*\.pdf$",
+                "required": True,
+                "count": 12,
+                "type": "monthly",
+            })
+        else:
+            docs.append({
+                "doc": f"{bank_name} Statements ({institution})",
+                "pattern": r"(?i)(bank|statement|checking).*\.pdf$",
+                "required": True,
+                "count": 12,
+                "type": "monthly",
+            })
 
     # Credit card statements
     for cc in entity_config.get("credit_cards", []):
@@ -158,7 +188,7 @@ def generate_checklist(year_path, config):
             })
             continue
 
-        expected_docs = _get_entity_expected_docs(entity)
+        expected_docs = _get_entity_expected_docs(entity, entity_path)
         files_in_folder = os.listdir(entity_path)
         items = []
 
@@ -217,6 +247,21 @@ def generate_checklist(year_path, config):
 
     # Process non-entity folders
     entity_folders = {e.get("folder_name", "") for e in entities}
+
+    # Pre-scan: extract AGI from prior return PDF (needed before processing Personal folder)
+    prior_return_data = {}
+    for folder in subfolders:
+        if _classify_folder(folder) == "Prior Returns":
+            folder_path = os.path.join(year_path, folder)
+            for f in os.listdir(folder_path):
+                if f.lower().endswith(".pdf") and re.search(r"(?i)(tax.?return|1040)", f):
+                    try:
+                        prior_return_data = parse_prior_return(os.path.join(folder_path, f))
+                    except Exception as e:
+                        logger.warning(f"Prior return parse failed for {f}: {e}")
+                    break
+            break
+
     for folder in subfolders:
         if folder in entity_folders:
             continue
@@ -232,6 +277,16 @@ def generate_checklist(year_path, config):
         files_in_folder = os.listdir(folder_path)
         items = []
 
+        # If this is Prior Returns, try to extract AGI from any 1040 PDF
+        if category == "Prior Returns" and not prior_return_data:
+            for f in files_in_folder:
+                if f.lower().endswith(".pdf") and re.search(r"(?i)(tax.?return|1040)", f):
+                    try:
+                        prior_return_data = parse_prior_return(os.path.join(folder_path, f))
+                    except Exception as e:
+                        logger.warning(f"Prior return parse failed for {f}: {e}")
+                    break
+
         for doc_spec in expected_docs:
             pattern = doc_spec["pattern"]
             expected_count = doc_spec.get("count", 1)
@@ -243,6 +298,12 @@ def generate_checklist(year_path, config):
                 status = "FOUND" if len(matching_files) >= (expected_count if isinstance(expected_count, int) else 1) else "PARTIAL"
             else:
                 status = "MISSING" if doc_spec.get("required") else "NEEDED"
+
+            # Auto-satisfy "Prior Year AGI" if we extracted it from the return
+            if "agi" in doc_spec["doc"].lower() and status in ("MISSING", "NEEDED"):
+                if prior_return_data.get("agi") is not None:
+                    status = "FOUND"
+                    matching_files = [f"Derived from prior return (AGI: ${prior_return_data['agi']:,.2f})"]
 
             if status == "FOUND":
                 total_found += 1
@@ -271,6 +332,55 @@ def generate_checklist(year_path, config):
                 "folder": folder,
                 "items": items,
             })
+
+    # Apply checklist overrides (disabled / stored_elsewhere)
+    year_match = re.search(r"(\d{4})", os.path.basename(year_path.rstrip("/")))
+    year_int = int(year_match.group(1)) if year_match else 0
+    overrides = {}
+    if year_int:
+        rows = db.query(
+            "SELECT category, doc_name, status, reference_file, reference_amount FROM checklist_overrides WHERE year = ?",
+            (year_int,),
+        )
+        for r in rows:
+            overrides[(r["category"], r["doc_name"])] = dict(r)
+
+    for cat in categories:
+        for item in cat["items"]:
+            key = (cat["name"], item["doc"])
+            ovr = overrides.get(key)
+            if not ovr:
+                continue
+            override_status = ovr["status"]
+            if override_status == "disabled":
+                orig_status = item["status"]
+                item["status"] = "DISABLED"
+                item["override"] = "disabled"
+                if item.get("count_expected") != "any":
+                    total_expected -= 1
+                    if orig_status == "FOUND":
+                        total_found -= 1
+            elif override_status == "stored_elsewhere":
+                item["status"] = "STORED_ELSEWHERE"
+                item["override"] = "stored_elsewhere"
+                if item.get("count_expected") != "any":
+                    if item.get("count_found", 0) == 0:
+                        total_found += 1
+            elif override_status == "referenced_in":
+                ref_file = ovr.get("reference_file") or ""
+                ref_amt = ovr.get("reference_amount")
+                ref_label = f"Referenced in {ref_file}"
+                if ref_amt:
+                    ref_label += f" (${ref_amt:,.2f})"
+                was_missing = item["status"] in ("MISSING", "NEEDED")
+                item["status"] = "FOUND"
+                item["override"] = "referenced_in"
+                item["files"] = [ref_label]
+                item["count_found"] = 1
+                item["reference_file"] = ref_file
+                item["reference_amount"] = ref_amt
+                if was_missing and item.get("count_expected") != "any":
+                    total_found += 1
 
     completion_pct = round(total_found / total_expected * 100, 1) if total_expected > 0 else 0
 

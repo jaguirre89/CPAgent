@@ -46,6 +46,17 @@ PARSED_DATA = {}  # keyed by year
 SSE_CLIENTS = []  # list of queue.Queue objects for SSE
 
 
+def invalidate_all_caches():
+    """Clear both in-memory and DB-persisted parse caches.
+    Call this after any mutation that affects parsed output (rules, overrides, etc).
+    """
+    PARSED_DATA.clear()
+    try:
+        parsed_cache.invalidate()
+    except Exception:
+        pass
+
+
 # ─── Config ───────────────────────────────────────────────────────────────────
 
 def load_config():
@@ -357,7 +368,7 @@ def post_config():
         save_config(cfg)
 
     # Clear parsed cache
-    PARSED_DATA.clear()
+    invalidate_all_caches()
 
     # Start file watcher if not already running
     start_file_watcher(root_path)
@@ -424,6 +435,40 @@ def get_findings(year):
     })
 
 
+@app.route("/api/findings/<int:year>/dismiss", methods=["POST"])
+def dismiss_finding(year):
+    """Manually resolve/dismiss a finding by fingerprint."""
+    body = request.get_json(silent=True) or {}
+    fingerprint = body.get("fingerprint", "").strip()
+    reason = body.get("reason", "User dismissed")
+    if not fingerprint:
+        return jsonify({"error": "fingerprint required"}), 400
+
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    rows = db.query(
+        "SELECT id, severity FROM findings_history WHERE fingerprint = ? AND year = ?",
+        (fingerprint, year),
+    )
+    if rows:
+        db.execute(
+            """UPDATE findings_history
+               SET previous_severity = severity, severity = 'RESOLVED', resolved_at = ?, last_seen = ?
+               WHERE fingerprint = ? AND year = ?""",
+            (now, now, fingerprint, year),
+        )
+    else:
+        # Insert as pre-resolved so it doesn't reappear on next parse
+        db.execute(
+            """INSERT INTO findings_history (fingerprint, year, severity, previous_severity, topic, title, first_seen, last_seen, resolved_at)
+               VALUES (?, ?, 'RESOLVED', 'REQUIRED', 'User Dismissed', ?, ?, ?, ?)""",
+            (fingerprint, year, reason, now, now, now),
+        )
+
+    sec_audit.log_action("user", "finding_dismiss", f"{year}/{fingerprint[:16]}", {"reason": reason})
+    invalidate_all_caches()
+    return jsonify({"status": "ok", "fingerprint": fingerprint})
+
+
 @app.route("/api/readiness/<int:year>", methods=["GET"])
 def get_readiness(year):
     cfg = load_config()
@@ -450,7 +495,14 @@ def learn_rule():
     pattern = body.get("pattern")
     category = body.get("schedule_c_category")
     entity_scope = body.get("entity_scope")
-    reasoning = body.get("reasoning", "User-taught via Findings tab")
+    notes = body.get("notes", "")
+    evidence_file = body.get("evidence_file", "")
+    reasoning_parts = ["User-taught via Findings tab"]
+    if notes:
+        reasoning_parts.append(f"Notes: {notes}")
+    if evidence_file:
+        reasoning_parts.append(f"Evidence: {evidence_file}")
+    reasoning = body.get("reasoning") or " | ".join(reasoning_parts)
     if not pattern:
         return jsonify({"error": "pattern required"}), 400
     rule_id = rules_store.add_rule(
@@ -461,7 +513,7 @@ def learn_rule():
         entity_scope=entity_scope,
         reasoning=reasoning,
     )
-    PARSED_DATA.clear()
+    invalidate_all_caches()
     sec_audit.log_action("user", "rule_learn", f"rule:{rule_id}", body)
     send_sse_event("rule_learned", {"rule_id": rule_id, "pattern": pattern, "category": category})
     return jsonify({"status": "ok", "rule_id": rule_id})
@@ -497,7 +549,7 @@ def batch_learn_rules():
 @app.route("/api/rules/<int:rule_id>", methods=["DELETE"])
 def delete_rule(rule_id):
     rules_store.delete_rule(rule_id)
-    PARSED_DATA.clear()
+    invalidate_all_caches()
     sec_audit.log_action("user", "rule_delete", f"rule:{rule_id}", None)
     return jsonify({"status": "deleted"})
 
@@ -512,14 +564,14 @@ def audit_recent():
 def shutdown():
     """Shut down the server AND disable launchd auto-restart.
 
-    If a LaunchAgent is installed (com.cpagent.app), unload it first so macOS's
-    KeepAlive won't respawn the process. Then exit.
+    If a LaunchAgent is installed (com.batman.cpagent or legacy com.batman.taxdashboard),
+    unload it first so macOS's KeepAlive won't respawn the process. Then exit.
     """
     import subprocess
     import signal
     unloaded = []
     la_dir = os.path.expanduser("~/Library/LaunchAgents")
-    for label in ("com.cpagent.app.plist",):
+    for label in ("com.batman.cpagent.plist", "com.batman.taxdashboard.plist"):
         plist = os.path.join(la_dir, label)
         if os.path.exists(plist):
             try:
@@ -551,7 +603,7 @@ def update_unknown_account(detected_name):
     from inference.account_detector import set_status
     status = (request.get_json(silent=True) or {}).get("status", "dismissed")
     set_status(detected_name, status)
-    PARSED_DATA.clear()
+    invalidate_all_caches()
     sec_audit.log_action("user", "unknown_account_update", detected_name, {"status": status})
     return jsonify({"status": "ok"})
 
@@ -574,6 +626,7 @@ def put_llm_budget():
         state = llm_coach.update_budget(
             ceiling_usd=body.get("ceiling_usd"),
             period=body.get("period"),
+            llm_enabled=body.get("llm_enabled"),
         )
         sec_audit.log_action("user", "llm_budget_update", "llm_budget", body)
         return jsonify(state)
@@ -646,6 +699,118 @@ def triage_file():
         return jsonify({"error": "budget_exceeded", "detail": str(e)}), 402
     except llm_coach.LLMUnavailable as e:
         return jsonify({"error": "llm_unavailable", "detail": str(e)}), 503
+
+
+@app.route("/api/amazon-invoices/<int:year>", methods=["GET"])
+def get_amazon_invoices(year):
+    from parser.amazon_parser import scan_amazon_folder, build_amazon_summary
+    cfg = load_config() or {}
+    root_path = cfg.get("root_path", os.path.dirname(APP_DIR))
+    years = discover_years(root_path)
+    year_info = next((y for y in years if y["year"] == year), None)
+    if not year_info:
+        return jsonify({"error": f"Year {year} not found"}), 404
+
+    all_invoices = []
+    for entity in cfg.get("entities", []):
+        entity_path = os.path.join(year_info["path"], entity.get("folder_name", ""))
+        invoices = scan_amazon_folder(entity_path)
+        for inv in invoices:
+            inv["entity"] = entity["name"]
+        all_invoices.extend(invoices)
+
+    return jsonify(build_amazon_summary(all_invoices))
+
+
+@app.route("/api/amazon-invoices/<int:year>/classify", methods=["POST"])
+def classify_amazon_invoice(year):
+    """LLM classification of multi-item Amazon invoices.
+    Only called for invoices with >1 item.
+    """
+    from learning import llm_coach
+    from security import scrubber as pii_scrubber, audit as sec_audit_mod
+
+    body = request.get_json(silent=True) or {}
+    items = body.get("items", [])
+    entity = body.get("entity", "")
+    order_number = body.get("order_number", "")
+
+    if len(items) <= 1:
+        return jsonify({"error": "LLM classification only needed for invoices with >1 item"}), 400
+
+    cfg = load_config() or {}
+    try:
+        budget = llm_coach.get_budget_state()
+        if not budget.get("llm_enabled", True):
+            return jsonify({"error": "llm_unavailable", "detail": "AI features disabled"}), 503
+
+        model_id = llm_coach.get_active_model()
+        item_descriptions = "\n".join(
+            f"- {it['name']} (${it.get('price', 0):.2f}, sold by {it.get('seller', 'unknown')})"
+            for it in items
+        )
+
+        system_prompt = (
+            "You are a tax classification assistant. Given a list of items from an Amazon order "
+            f"purchased by a business entity ({entity}), classify each item as either "
+            "'business' (deductible on Schedule C — office supplies, equipment, industry tools) "
+            "or 'personal' (not deductible). "
+            "Return strict JSON: {\"classifications\": [{\"name\": \"...\", \"classification\": \"business\"|\"personal\", "
+            "\"schedule_c_category\": \"Office expense\"|\"Supplies\"|null, \"reasoning\": \"...\"}]}"
+        )
+        user_prompt = f"Order #{order_number}\nEntity: {entity}\n\nItems:\n{item_descriptions}"
+
+        scrubbed, rmap = pii_scrubber.scrub({"prompt": user_prompt}, cfg)
+
+        est_cost = llm_coach.estimate_cost(
+            llm_coach._rough_tokens(system_prompt + str(scrubbed)), 400, model_id
+        )
+        if est_cost + budget["spent_usd"] > budget["ceiling_usd"]:
+            return jsonify({"error": "budget_exceeded"}), 402
+
+        sec_audit.log_action("user", "llm_call", f"anthropic:{model_id}:amazon_classify",
+                             {"order": order_number, "item_count": len(items)})
+
+        client = llm_coach._client()
+        response = client.messages.create(
+            model=model_id,
+            max_tokens=800,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+
+        raw_text = "".join(
+            b.text for b in response.content if getattr(b, "type", "") == "text"
+        )
+        import json as json_mod
+        try:
+            start = raw_text.find("{")
+            end = raw_text.rfind("}")
+            parsed = json_mod.loads(raw_text[start:end + 1]) if start >= 0 and end > start else {}
+        except Exception:
+            parsed = {"raw": raw_text}
+
+        actual_cost = llm_coach.estimate_cost(
+            response.usage.input_tokens, response.usage.output_tokens, model_id
+        )
+        db.execute(
+            """INSERT INTO llm_suggestions (prompt_hash, scrubbed_batch_json, response_json, cost_usd, model_id)
+               VALUES (?, ?, ?, ?, ?)""",
+            (sec_audit._hash(str(scrubbed)), str(scrubbed)[:2000], json_mod.dumps(parsed), round(actual_cost, 6), model_id),
+        )
+
+        parsed["cost_usd"] = round(actual_cost, 6)
+        parsed["model"] = model_id
+        parsed["budget"] = llm_coach.get_budget_state()
+        return jsonify(parsed)
+
+    except llm_coach.BudgetExceeded as e:
+        return jsonify({"error": "budget_exceeded", "detail": str(e)}), 402
+    except llm_coach.LLMUnavailable as e:
+        return jsonify({"error": "llm_unavailable", "detail": str(e)}), 503
+    except Exception as e:
+        logger.exception("Amazon classify failed")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/filing/generate/<int:year>", methods=["POST"])
@@ -768,6 +933,136 @@ def get_checklist(year):
     if data is None:
         return jsonify({"error": f"Year {year} not found"}), 404
     return jsonify(data.get("checklist", {}))
+
+
+@app.route("/api/checklist-override/<int:year>", methods=["POST"])
+def set_checklist_override(year):
+    body = request.get_json(silent=True) or {}
+    category = body.get("category", "").strip()
+    doc_name = body.get("doc_name", "").strip()
+    status = body.get("status", "").strip()  # disabled, stored_elsewhere, or empty to remove
+
+    if not category or not doc_name:
+        return jsonify({"error": "category and doc_name required"}), 400
+
+    if status in ("disabled", "stored_elsewhere", "referenced_in"):
+        db.execute(
+            """INSERT OR REPLACE INTO checklist_overrides
+               (year, category, doc_name, status, reason, reference_file, reference_amount)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (year, category, doc_name, status, body.get("reason", ""),
+             body.get("reference_file"), body.get("reference_amount")),
+        )
+    elif status == "" or status == "active":
+        db.execute(
+            "DELETE FROM checklist_overrides WHERE year = ? AND category = ? AND doc_name = ?",
+            (year, category, doc_name),
+        )
+    else:
+        return jsonify({"error": f"Invalid status: {status}"}), 400
+
+    sec_audit.log_action("user", "checklist_override", f"{year}/{category}/{doc_name}", body)
+
+    invalidate_all_caches()
+
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/schedule-c-notes/<int:year>", methods=["GET"])
+def get_schedule_c_notes(year):
+    rows = db.query(
+        "SELECT entity, line_number, note_text, implies_rule, updated_at FROM schedule_c_notes WHERE year = ?",
+        (year,),
+    )
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/schedule-c-notes/<int:year>", methods=["POST"])
+def save_schedule_c_note(year):
+    body = request.get_json(silent=True) or {}
+    entity = body.get("entity", "").strip()
+    line_number = body.get("line_number", "").strip()
+    note_text = body.get("note_text", "").strip()
+
+    if not entity or not line_number:
+        return jsonify({"error": "entity and line_number required"}), 400
+
+    if note_text:
+        db.execute(
+            """INSERT OR REPLACE INTO schedule_c_notes (year, entity, line_number, note_text, updated_at)
+               VALUES (?, ?, ?, ?, datetime('now'))""",
+            (year, entity, line_number, note_text),
+        )
+    else:
+        db.execute(
+            "DELETE FROM schedule_c_notes WHERE year = ? AND entity = ? AND line_number = ?",
+            (year, entity, line_number),
+        )
+
+    sec_audit.log_action("user", "schedule_c_note", f"{year}/{entity}/L{line_number}", {"length": len(note_text)})
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/conduit-relationships/<int:year>", methods=["GET"])
+def get_conduit_relationships(year):
+    from parser.conduit import load_conduit_relationships, scan_1099s
+    cfg = load_config() or {}
+    rels = load_conduit_relationships(year)
+    root_path = cfg.get("root_path", os.path.dirname(APP_DIR))
+    years = discover_years(root_path)
+    year_info = next((y for y in years if y["year"] == year), None)
+    issued_1099s = scan_1099s(year_info["path"]) if year_info else []
+    return jsonify({"relationships": rels, "issued_1099s": issued_1099s})
+
+
+@app.route("/api/conduit-relationships/<int:year>", methods=["POST"])
+def save_conduit_relationship_route(year):
+    from parser.conduit import save_conduit_relationship
+    body = request.get_json(silent=True) or {}
+    body["year"] = year
+    if not body.get("counterparty_name") or not body.get("treatment"):
+        return jsonify({"error": "counterparty_name and treatment required"}), 400
+    row_id = save_conduit_relationship(body)
+    sec_audit.log_action("user", "conduit_save", f"{year}/{body['counterparty_name']}", body)
+
+    invalidate_all_caches()
+    return jsonify({"status": "ok", "id": row_id})
+
+
+@app.route("/api/home-office/<int:year>", methods=["GET"])
+def get_home_office(year):
+    from parser.home_office import compute_total_deduction, detect_leases_from_folder
+    cfg = load_config() or {}
+    root_path = cfg.get("root_path", os.path.dirname(APP_DIR))
+    years = discover_years(root_path)
+    year_info = next((y for y in years if y["year"] == year), None)
+
+    result = compute_total_deduction(year)
+    if year_info:
+        result["detected_leases"] = detect_leases_from_folder(year_info["path"])
+    return jsonify(result)
+
+
+@app.route("/api/home-office/<int:year>", methods=["POST"])
+def save_home_office(year):
+    from parser.home_office import save_home_office_period
+    body = request.get_json(silent=True) or {}
+    body["year"] = year
+    if not body.get("address") or not body.get("start_date") or not body.get("end_date"):
+        return jsonify({"error": "address, start_date, end_date required"}), 400
+    row_id = save_home_office_period(body)
+    sec_audit.log_action("user", "home_office_save", f"{year}/{body['address']}", body)
+    invalidate_all_caches()
+    return jsonify({"status": "ok", "id": row_id})
+
+
+@app.route("/api/home-office/<int:year>/<int:period_id>", methods=["DELETE"])
+def delete_home_office_route(year, period_id):
+    from parser.home_office import delete_home_office_period
+    delete_home_office_period(period_id)
+    sec_audit.log_action("user", "home_office_delete", f"{year}/period:{period_id}", None)
+    invalidate_all_caches()
+    return jsonify({"status": "ok"})
 
 
 @app.route("/api/strategy/<int:year>", methods=["GET"])
@@ -953,7 +1248,7 @@ def save_csv_mapping():
         cfg["csv_mappings"] = {}
     cfg["csv_mappings"][header_hash] = mapping
     save_config(cfg)
-    PARSED_DATA.clear()
+    invalidate_all_caches()
 
     return jsonify({"status": "saved"})
 

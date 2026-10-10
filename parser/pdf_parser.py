@@ -86,23 +86,46 @@ def parse_wells_fargo_statement(filepath):
             if period_match:
                 result["statement_date"] = period_match.group(2).strip()
 
-            # Extract beginning/ending balance
-            begin_match = re.search(r"[Bb]eginning [Bb]alance[:\s]*\$?([\d,]+\.?\d*)", full_text)
-            if begin_match:
-                result["beginning_balance"] = float(begin_match.group(1).replace(",", ""))
+            # Detect if this is a credit card statement vs checking
+            is_cc = bool(re.search(r"(?:SIGNIFY|CREDIT CARD|Previous Balance|New Balance)", full_text))
 
-            end_match = re.search(r"[Ee]nding [Bb]alance[:\s]*\$?([\d,]+\.?\d*)", full_text)
-            if end_match:
-                result["ending_balance"] = float(end_match.group(1).replace(",", ""))
+            if is_cc:
+                # Credit card statement — extract CC-specific fields
+                result["type"] = "cc_statement"
+                prev_match = re.search(r"Previous Balance\s*\$?([\d,]+\.\d{2})", full_text)
+                if prev_match:
+                    result["previous_balance"] = float(prev_match.group(1).replace(",", ""))
+                new_match = re.search(r"New Balance\s*\$?([\d,]+\.\d{2})", full_text)
+                if new_match:
+                    result["new_balance"] = float(new_match.group(1).replace(",", ""))
+                pay_match = re.search(r"(?:Payments|Credits)\s*-?\s*\$?([\d,]+\.\d{2})", full_text)
+                if pay_match:
+                    result["total_payments"] = float(pay_match.group(1).replace(",", ""))
+                chg_match = re.search(r"(?:Purchases|Charges)\s*\+?\s*\$?([\d,]+\.\d{2})", full_text)
+                if chg_match:
+                    result["total_charges"] = float(chg_match.group(1).replace(",", ""))
+                if result.get("previous_balance") is not None or result.get("new_balance") is not None:
+                    result["status"] = "COMPLETE"
+            else:
+                # Checking statement — extract checking-specific fields
+                begin_match = re.search(r"[Bb]eginning [Bb]alance.*?\$?([\d,]+\.\d{2})", full_text)
+                if begin_match:
+                    result["beginning_balance"] = float(begin_match.group(1).replace(",", ""))
 
-            # Extract total deposits/withdrawals
-            dep_match = re.search(r"[Tt]otal (?:[Dd]eposits|[Cc]redits)[:\s]*\$?([\d,]+\.?\d*)", full_text)
-            if dep_match:
-                result["total_deposits"] = float(dep_match.group(1).replace(",", ""))
+                end_match = re.search(r"[Ee]nding [Bb]alance.*?\$?([\d,]+\.\d{2})", full_text)
+                if end_match:
+                    result["ending_balance"] = float(end_match.group(1).replace(",", ""))
 
-            with_match = re.search(r"[Tt]otal (?:[Ww]ithdrawals|[Dd]ebits)[:\s]*\$?([\d,]+\.?\d*)", full_text)
-            if with_match:
-                result["total_withdrawals"] = float(with_match.group(1).replace(",", ""))
+                dep_match = re.search(r"(?:[Tt]otal )?[Dd]eposits(?:/[Cc]redits)?.*?\$?([\d,]+\.\d{2})", full_text)
+                if dep_match:
+                    result["total_deposits"] = float(dep_match.group(1).replace(",", ""))
+
+                with_match = re.search(r"(?:[Tt]otal )?[Ww]ithdrawals(?:/[Dd]ebits)?.*?\$?([\d,]+\.\d{2})", full_text)
+                if with_match:
+                    result["total_withdrawals"] = float(with_match.group(1).replace(",", ""))
+
+                if result["beginning_balance"] is not None or result["ending_balance"] is not None:
+                    result["status"] = "COMPLETE"
 
             # Determine statement month from filename (MMDDYY format)
             fname = os.path.basename(filepath)
@@ -116,11 +139,6 @@ def parse_wells_fargo_statement(filepath):
                         result["statement_date"] = stmt_date.strftime("%B %d, %Y")
                 except ValueError:
                     pass
-
-            if result["beginning_balance"] is not None or result["ending_balance"] is not None:
-                result["status"] = "COMPLETE"
-            else:
-                result["status"] = "PARTIAL"
 
     except Exception as e:
         result["status"] = "FAILED"
@@ -164,7 +182,7 @@ def parse_citi_cc_statement(filepath):
             if acct_match:
                 result["account_number"] = acct_match.group(1)
 
-            # Statement month from filename: "Citi-CC_XXXX_Month DD.pdf"
+            # Statement month from filename: "Citi-CC_8552_Month DD.pdf"
             month_match = re.search(r"_(\w+)\s*(?:\d+)?\.pdf", fname, re.IGNORECASE)
             if month_match:
                 month_name = month_match.group(1)
@@ -378,3 +396,65 @@ def parse_all_pdfs_in_folder(folder_path):
             results.append(result)
 
     return results
+
+
+def parse_prior_return(filepath):
+    """Extract key fields from a prior-year Form 1040 PDF (AGI, total tax, etc.)."""
+    if not HAS_PDFPLUMBER:
+        return {"status": "FAILED", "error": "pdfplumber not installed"}
+
+    result = {
+        "type": "prior_return",
+        "file": os.path.basename(filepath),
+        "status": "PARTIAL",
+    }
+
+    try:
+        with pdfplumber.open(filepath) as pdf:
+            full_text = ""
+            for page in pdf.pages[:5]:  # First 5 pages cover Form 1040
+                text = page.extract_text()
+                if text:
+                    full_text += text + "\n"
+
+            if not full_text.strip():
+                result["status"] = "FAILED"
+                result["error"] = "No text extracted"
+                return result
+
+            # AGI — Line 11 of Form 1040
+            agi_match = re.search(
+                r"(?:line\s*11|adjusted\s*gross\s*income).*?[\$\s]([\d,]+(?:\.\d{2})?)",
+                full_text, re.IGNORECASE
+            )
+            if agi_match:
+                result["agi"] = float(agi_match.group(1).replace(",", ""))
+
+            # Total tax — Line 24
+            tax_match = re.search(
+                r"(?:line\s*24|total\s*tax).*?[\$\s]([\d,]+(?:\.\d{2})?)",
+                full_text, re.IGNORECASE
+            )
+            if tax_match:
+                result["total_tax"] = float(tax_match.group(1).replace(",", ""))
+
+            # Filing status
+            for status_kw in ["married filing jointly", "single", "head of household",
+                              "married filing separately", "qualifying"]:
+                if status_kw in full_text.lower():
+                    result["filing_status"] = status_kw.title()
+                    break
+
+            # Tax year
+            year_match = re.search(r"(?:Form 1040|tax year|20)\s*(\d{4})", full_text, re.IGNORECASE)
+            if year_match:
+                result["tax_year"] = int(year_match.group(1))
+
+            if result.get("agi") is not None:
+                result["status"] = "COMPLETE"
+
+    except Exception as e:
+        result["status"] = "FAILED"
+        result["error"] = str(e)
+
+    return result

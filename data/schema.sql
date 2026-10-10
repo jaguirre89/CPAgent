@@ -104,3 +104,64 @@ CREATE TABLE IF NOT EXISTS parsed_cache (
     source_signature TEXT NOT NULL,
     cached_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS checklist_overrides (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    year INTEGER NOT NULL,
+    category TEXT NOT NULL,
+    doc_name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    reason TEXT,
+    reference_file TEXT,
+    reference_amount REAL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (year, category, doc_name)
+);
+
+CREATE TABLE IF NOT EXISTS schedule_c_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    year INTEGER NOT NULL,
+    entity TEXT NOT NULL,
+    line_number TEXT NOT NULL,
+    note_text TEXT NOT NULL,
+    implies_rule INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (year, entity, line_number)
+);
+
+CREATE TABLE IF NOT EXISTS home_office_periods (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    year INTEGER NOT NULL,
+    address TEXT NOT NULL,
+    lease_file TEXT,
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    total_sqft REAL,
+    office_sqft REAL,
+    monthly_rent REAL,
+    monthly_utilities REAL,
+    monthly_insurance REAL,
+    monthly_internet REAL,
+    method TEXT NOT NULL DEFAULT 'simplified' CHECK (method IN ('simplified', 'regular')),
+    notes TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (year, address, start_date)
+);
+
+CREATE TABLE IF NOT EXISTS conduit_relationships (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    counterparty_name TEXT NOT NULL,
+    entity_scope TEXT,
+    memo_pattern TEXT,
+    treatment TEXT NOT NULL CHECK (treatment IN ('subtract_from_gross', 'book_as_contract_labor')),
+    linked_1099_amount REAL,
+    linked_1099_file TEXT,
+    expected_annual_amount REAL,
+    year INTEGER,
+    notes TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (counterparty_name, entity_scope, year)
+);

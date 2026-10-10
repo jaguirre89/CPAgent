@@ -4,4 +4,11 @@ pdfplumber>=0.11
 openpyxl>=3.1
 chardet>=5.0
 keyring>=24.0
-sqlcipher3-binary>=0.5; platform_system != "Windows"
+# sqlcipher3-wheels: the only SQLCipher package with an arm64 macOS wheel (sqlcipher3-binary has none)
+sqlcipher3-wheels>=0.5; platform_system != "Windows"
+# pypdf: imported by the filing code to fill/merge PDF forms
+pypdf>=4.0
+# reportlab: imported by the filing code to draw overlays on PDF forms
+reportlab>=4.0
+# anthropic: imported by learning/llm_coach.py for LLM suggestions
+anthropic>=0.30

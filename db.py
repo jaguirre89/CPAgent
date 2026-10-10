@@ -96,6 +96,37 @@ def init_db():
             "INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('encryption_active', ?)",
             ("1" if _ENCRYPTION_ACTIVE else "0",),
         )
+        # Migrations — add columns that may not exist in older schemas
+        for migration in [
+            "ALTER TABLE llm_budget ADD COLUMN llm_enabled INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE checklist_overrides ADD COLUMN reference_file TEXT",
+            "ALTER TABLE checklist_overrides ADD COLUMN reference_amount REAL",
+        ]:
+            try:
+                conn.execute(migration)
+            except Exception:
+                pass
+
+        # Remove CHECK constraint from checklist_overrides to allow 'referenced_in' status
+        try:
+            # Check if constraint exists by trying a test value
+            conn.execute("INSERT INTO checklist_overrides (year,category,doc_name,status) VALUES (0,'_test','_test','referenced_in')")
+            conn.execute("DELETE FROM checklist_overrides WHERE year = 0 AND category = '_test'")
+        except Exception:
+            # Constraint blocks 'referenced_in' — rebuild table without it
+            for stmt in [
+                """CREATE TABLE IF NOT EXISTS checklist_overrides_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    year INTEGER NOT NULL, category TEXT NOT NULL, doc_name TEXT NOT NULL,
+                    status TEXT NOT NULL, reason TEXT, reference_file TEXT, reference_amount REAL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    UNIQUE (year, category, doc_name))""",
+                "INSERT OR IGNORE INTO checklist_overrides_new SELECT id, year, category, doc_name, status, reason, reference_file, reference_amount, created_at FROM checklist_overrides",
+                "DROP TABLE checklist_overrides",
+                "ALTER TABLE checklist_overrides_new RENAME TO checklist_overrides",
+            ]:
+                conn.execute(stmt)
+                pass  # Column already exists
     logger.info(
         f"DB initialized at {DB_PATH} (encryption_active={_ENCRYPTION_ACTIVE})"
     )
